@@ -31,6 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
+          sha256sum -c SHA256SUMS.txt
           test "$(cat tools/drive-gpu-lab/VERSION)" = "0.1.0-dev.1"
           python3 - <<'PY'
           from pathlib import Path
@@ -96,6 +97,48 @@ jobs:
           assert events[1]['source'] == 'hostd' and events[1]['type'] == 'telemetry'
           assert all(x['v'] == 1 for x in events)
           print('hostd protocol smoke: PASS')
+          PY
+      - name: Host daemon control validation smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/dgl-linux/hostd-control-smoke.jsonl
+          build/dgl-linux/g720-hostd --stdout --interval-ms 50 >"$OUT" 2>&1 &
+          HPID=$!
+          trap 'kill "$HPID" 2>/dev/null || true; wait "$HPID" 2>/dev/null || true' EXIT
+          python3 - <<'PY'
+          import pathlib, socket, time
+          out = pathlib.Path('build/dgl-linux/hostd-control-smoke.jsonl')
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          deadline = time.time() + 5.0
+          while time.time() < deadline:
+              try:
+                  s.sendto(b'{"v":1,"source":"probe","type":"session_hello","session_id":"overflow","game_key":"ci","pid":999999999999999999999999999999999}', ('127.0.0.1', 47521))
+                  time.sleep(0.05)
+                  s.sendto(b'{"v":1,"source":"probe","type":"session_hello","session_id":"valid","game_key":"ci","pid":4242}', ('127.0.0.1', 47521))
+              except OSError:
+                  pass
+              time.sleep(0.10)
+              if out.exists() and '"session_id":"valid"' in out.read_text(encoding='utf-8', errors='replace'):
+                  break
+          else:
+              raise SystemExit('hostd control response timeout')
+          PY
+          kill "$HPID" 2>/dev/null || true
+          wait "$HPID" 2>/dev/null || true
+          trap - EXIT
+          python3 - <<'PY'
+          import json
+          events=[]
+          for line in open('build/dgl-linux/hostd-control-smoke.jsonl', encoding='utf-8'):
+              line=line.strip()
+              if line.startswith('{'):
+                  events.append(json.loads(line))
+          ids=[x for x in events if x.get('source')=='hostd' and x.get('type')=='identity']
+          assert ids, events
+          assert all(x.get('target_pid') != 18446744073709551615 for x in ids), ids
+          assert any(x.get('session_id')=='valid' and x.get('target_pid')==4242 for x in ids), ids
+          print('hostd control validation: PASS')
           PY
       - name: Package
         shell: bash
@@ -246,10 +289,13 @@ jobs:
           Copy-Item 'tools/drive-gpu-lab/CHANGELOG.md' $d
           Copy-Item 'tools/drive-gpu-lab/config' "$d/config" -Recurse
           Copy-Item 'tools/drive-gpu-lab/docs' "$d/docs" -Recurse
-          Get-ChildItem $d -File | Sort-Object Name | ForEach-Object {
-            $h = Get-FileHash $_.FullName -Algorithm SHA256
-            "$($h.Hash.ToLower())  $($_.Name)"
-          } | Set-Content "$d/SHA256SUMS.txt"
+          $base = (Resolve-Path $d).Path
+          Get-ChildItem $d -File -Recurse | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
+            Sort-Object FullName | ForEach-Object {
+              $h = Get-FileHash $_.FullName -Algorithm SHA256
+              $rel = [IO.Path]::GetRelativePath($base, $_.FullName).Replace('\','/')
+              "$($h.Hash.ToLower())  $rel"
+            } | Set-Content "$d/SHA256SUMS.txt"
           Compress-Archive -Path "$d/*" -DestinationPath 'dist/drive-gpu-lab-windows-${{ matrix.arch }}.zip' -CompressionLevel Optimal
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:

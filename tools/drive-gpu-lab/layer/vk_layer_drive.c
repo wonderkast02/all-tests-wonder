@@ -114,10 +114,15 @@ static BOOL CALLBACK udp_init_once(PINIT_ONCE once, PVOID param, PVOID *ctx) {
 }
 
 static void emit_json(const char *json) {
-    if (!json) return;
+    char packet[DGL_MAX_EVENT_BYTES + 64];
+    int written;
+    if (!json || json[0] != '{') return;
+    written = snprintf(packet, sizeof(packet), "{\"pid\":%lu,%s",
+                       (unsigned long)GetCurrentProcessId(), json + 1);
+    if (written <= 0 || (size_t)written >= sizeof(packet)) return;
     InitOnceExecuteOnce(&g_udp_once, udp_init_once, NULL, NULL);
     if (g_udp != INVALID_SOCKET) {
-        (void)sendto(g_udp, json, (int)strlen(json), 0,
+        (void)sendto(g_udp, packet, written, 0,
                      (const struct sockaddr *)&g_udp_dst, (int)sizeof(g_udp_dst));
     }
 }

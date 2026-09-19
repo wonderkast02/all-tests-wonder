@@ -9,7 +9,7 @@ Projeto independente para validar ferramentas, builds e ambientes com evidência
 ## 🚀 Drive GPU Lab
 
 **Versão atual:** `0.1.0-dev.1`  
-**Status:** 🟢 pré-versão de desenvolvimento qualificada
+**Status:** 🟡 CI qualificada; qualificação completa em dispositivo G720/Winlator em andamento
 
 O **Drive GPU Lab** coleta e organiza informações de testes no **Winlator / Wine / Vulkan / PanVK**, ajudando a identificar com precisão onde um problema começou e em qual ambiente ele ocorreu.
 

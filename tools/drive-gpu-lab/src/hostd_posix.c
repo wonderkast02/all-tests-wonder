@@ -261,9 +261,15 @@ static uint64_t json_u64(const char *json, const char *key, uint64_t fallback) {
     const char *p = json_find_value(json, key);
     char *end = NULL;
     unsigned long long v;
-    if (!p || !strncmp(p, "null", 4)) return fallback;
+    if (!p) return fallback;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (!strncmp(p, "null", 4) || *p == '-') return fallback;
+    errno = 0;
     v = strtoull(p, &end, 10);
-    return end == p ? fallback : (uint64_t)v;
+    if (end == p || errno == ERANGE) return fallback;
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') ++end;
+    if (*end && *end != ',' && *end != '}' && *end != ']') return fallback;
+    return (uint64_t)v;
 }
 
 static int make_nonblocking(int fd) {

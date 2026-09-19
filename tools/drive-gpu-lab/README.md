@@ -8,7 +8,7 @@
 - did a candidate driver improve average performance while worsening tail frametimes?
 - was a crash preceded by `VK_ERROR_DEVICE_LOST`, memory pressure, a GPU frequency drop or an external log error?
 
-> **Status:** `0.1.0-dev.1`. This is developer instrumentation, not a Vulkan-conformance or universal-compatibility claim. CI qualification and real-device qualification are separate gates.
+> **Status:** `0.1.0-dev.1`. CI qualification is green; complete G720/Winlator real-device qualification remains a separate gate. This is developer instrumentation, not a Vulkan-conformance or universal-compatibility claim.
 
 ## Components
 
