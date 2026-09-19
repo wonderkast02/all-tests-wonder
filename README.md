@@ -1,52 +1,98 @@
-# All Tests Wonder
+# 🧪 All Tests Wonder
 
-**All Tests Wonder** is a standalone test, telemetry, diagnostics and qualification
-repository for graphics/runtime experiments maintained by Wonder.
+Ferramentas de **teste, telemetria, diagnóstico e qualificação** para gráficos e runtimes.
 
-The repository is intentionally independent from any single GPU-driver source
-tree. Tools live as self-contained components under `tools/`, with their own
-versioning, documentation and licensing.
+Projeto independente para validar ferramentas, builds e ambientes com evidências reproduzíveis.
 
-## Current component
+---
 
-### Drive GPU Lab — `0.1.0-dev.1`
+## 🚀 Drive GPU Lab
 
-`tools/drive-gpu-lab/` contains the first development version of the Winlator /
-Vulkan / PanVK-oriented telemetry stack:
+**Versão atual:** `0.1.0-dev.1`  
+**Status:** 🟢 pré-versão de desenvolvimento qualificada
 
-- `G720Probe.exe` — Windows/Wine/Winlator background probe and HUD;
-- `G720VkLayer.dll` — Vulkan telemetry layer;
-- `g720-hostd` — Android/Linux host telemetry daemon;
-- per-game persistent folders with per-session separation;
-- automatic runtime/translator/driver identification;
-- DXVK, VKD3D-Proton, Wine, Proton, Box64, FEX, Vulkan, Mesa/PanVK and host
-  evidence ingestion when those data are actually available;
-- structured `timeline.jsonl` plus human-readable `MASTER.log`;
-- bug markers, screenshots, ring-buffer context and regression-oriented data.
+O **Drive GPU Lab** coleta e organiza informações de testes no **Winlator / Wine / Vulkan / PanVK**, ajudando a identificar com precisão onde um problema começou e em qual ambiente ele ocorreu.
 
-See [`tools/drive-gpu-lab/README.md`](tools/drive-gpu-lab/README.md) for technical
-details and installation instructions.
+### 🧩 Componentes
 
-## Repository principles
+- 🖥️ **`G720Probe.exe`** — supervisor, HUD, sessões e telemetria no Windows/Wine/Winlator
+- 🎮 **`G720VkLayer.dll`** — camada Vulkan para present, submits, memória e eventos de falha
+- 📱 **`g720-hostd`** — telemetria do host Android/Linux
 
-1. Evidence must be attributable to an exact session and environment.
-2. Unknown data stays unknown; tools should not guess runtime identity.
-3. Generated binaries do not belong in Git history when they can be published
-   as release or CI assets.
-4. Source, CI and release artifacts must be reproducible and checksumable.
-5. A developer build is not called stable until it passes the relevant real
-   device qualification gates.
+### 📊 Coleta
 
-## Layout
+- FPS e frametime
+- CPU, RAM, GPU, frequência e temperatura
+- Vulkan, DXVK, VKD3D-Proton, Wine, Box64 e FEX
+- Mesa / PanVK e módulos gráficos carregados
+- hashes SHA-256 dos binários relevantes
+- eventos, marcadores de bug e contexto da sessão
+- logs separados por jogo e por execução
+
+---
+
+## ✅ Qualificação
+
+| Etapa | Estado |
+|---|:---:|
+| 🧹 Qualidade do código-fonte | ✅ |
+| 🐧 Linux x86_64 | ✅ |
+| 📱 Android arm64-v8a | ✅ |
+| 🪟 Windows x64 | ✅ |
+| 🪟 Windows x86 | ✅ |
+| 🔐 SHA-256 dos pacotes | ✅ |
+| 🧩 Arquiteturas ELF / PE | ✅ |
+| 🎮 ABI / exports da camada Vulkan | ✅ |
+
+---
+
+## 📦 Download
+
+### **[⬇️ Drive GPU Lab 0.1.0-dev.1](https://github.com/wonderkast02/all-tests-wonder/releases/tag/drive-gpu-lab-0.1.0-dev.1)**
+
+Escolha o pacote correspondente ao ambiente que será testado.
+
+---
+
+## 🗂️ Organização
+
+Cada jogo mantém uma pasta própria. Cada execução cria apenas uma nova sessão.
 
 ```text
-.github/workflows/      CI / qualification automation
-docs/                   repository-level policies
-tools/drive-gpu-lab/    Drive GPU Lab source and documentation
-artifacts/              textual manifests/checksums for published artifacts
+DriveGpuLab/
+└── games/
+    └── nome-do-jogo/
+        ├── game.json
+        ├── history.jsonl
+        ├── latest.txt
+        └── sessions/
+            └── <sessão>/
 ```
 
-## Status
+Assim, resultados antigos não são misturados com testes novos.
 
-`Drive GPU Lab 0.1.0-dev.1` is developer instrumentation. It is not a Vulkan
-conformance statement and does not claim universal game compatibility.
+---
+
+## 🎯 Princípios
+
+- evidência antes de suposição;
+- dados indisponíveis permanecem desconhecidos;
+- cada resultado pertence a uma sessão e ambiente exatos;
+- builds e artefatos devem ser verificáveis;
+- desempenho só é comparado com condições controladas.
+
+---
+
+## ⚠️ Estado do projeto
+
+`Drive GPU Lab 0.1.0-dev.1` é uma ferramenta de **instrumentação para desenvolvimento**.
+
+Não representa certificação oficial de conformidade Vulkan e não garante compatibilidade universal com jogos.
+
+---
+
+## 📄 Licenciamento
+
+O **All Tests Wonder** utiliza licenciamento por componente.
+
+O Drive GPU Lab possui licença própria e identificadores SPDX em `tools/drive-gpu-lab/`.
