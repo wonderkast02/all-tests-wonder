@@ -32,3 +32,4 @@ Before the first public dev.1 prerelease, CI qualification was hardened to:
 - harden Win32 size conversions under `/W4 /WX` and make per-run session IDs collision-resistant while keeping the per-game root stable.
 - correct Tool Help process/module enumeration to the SDK's unsuffixed ANSI entry points used by `PROCESSENTRY32` and `MODULEENTRY32`.
 - resolve MSVC `dumpbin.exe` through Visual Studio `vswhere` in Windows CI instead of assuming it is present in the default PowerShell `PATH`.
+- redesenha o HUD Win32 em cartões compactos semitransparentes, com hierarquia visual, cores por métrica e fundo click-through para preservar a visibilidade do jogo.
