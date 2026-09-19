@@ -19,3 +19,16 @@ Initial Drive GPU Lab developer instrumentation candidate:
 - heap-backed event ring with observable overwrite counters;
 - CI packaging plan for Linux x86-64, Android arm64-v8a, Windows x64 and Windows x86;
 - qualification, schema, detection, installation and privacy documentation.
+### Qualification hardening
+
+Before the first public dev.1 prerelease, CI qualification was hardened to:
+
+- preserve `/W4 /WX` on MSVC while explicitly allowing only portable ISO C CRT interfaces;
+- avoid Vulkan loader symbol-linkage collisions and export stable custom layer entry points;
+- provide architecture-specific `.def` aliases so Win32 and Win64 expose the exact manifest names;
+- validate Vulkan layer manifest JSON and exported PE symbols in CI;
+- pin hosted runner families and Node 24-based GitHub Actions by immutable commit SHA;
+- use the runner-provided Android SDK directly and install the pinned NDK without the deprecated `tools` package path;
+- harden Win32 size conversions under `/W4 /WX` and make per-run session IDs collision-resistant while keeping the per-game root stable.
+- correct Tool Help process/module enumeration to the SDK's unsuffixed ANSI entry points used by `PROCESSENTRY32` and `MODULEENTRY32`.
+- resolve MSVC `dumpbin.exe` through Visual Studio `vswhere` in Windows CI instead of assuming it is present in the default PowerShell `PATH`.

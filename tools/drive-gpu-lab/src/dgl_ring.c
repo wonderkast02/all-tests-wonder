@@ -38,8 +38,12 @@ void dgl_ring_push(dgl_ring *r, uint64_t seq, const char *line) {
     size_t slot;
     if (!r || !r->lines || !r->seq || !r->capacity || !line) return;
     slot = r->head;
-    strncpy(r->lines[slot], line, DGL_RING_LINE_BYTES - 1u);
-    r->lines[slot][DGL_RING_LINE_BYTES - 1u] = '\0';
+    {
+        size_t len = strlen(line);
+        if (len >= DGL_RING_LINE_BYTES) len = DGL_RING_LINE_BYTES - 1u;
+        memcpy(r->lines[slot], line, len);
+        r->lines[slot][len] = '\0';
+    }
     r->seq[slot] = seq;
     r->head = (r->head + 1u) % r->capacity;
     ++r->pushed;

@@ -546,20 +546,20 @@ static BOOL CALLBACK score_window_proc(HWND hwnd, LPARAM param) {
 
 static DWORD find_process_by_name(const char *name) {
     HANDLE snap;
-    PROCESSENTRY32A pe;
+    PROCESSENTRY32 pe;
     DWORD pid = 0;
     if (!name || !name[0]) return 0;
     snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return 0;
     memset(&pe, 0, sizeof(pe));
-    pe.dwSize = sizeof(pe);
-    if (Process32FirstA(snap, &pe)) {
+    pe.dwSize = (DWORD)sizeof(pe);
+    if (Process32First(snap, &pe)) {
         do {
             if (_stricmp(pe.szExeFile, name) == 0) {
                 pid = pe.th32ProcessID;
                 break;
             }
-        } while (Process32NextA(snap, &pe));
+        } while (Process32Next(snap, &pe));
     }
     CloseHandle(snap);
     return pid;
@@ -567,15 +567,15 @@ static DWORD find_process_by_name(const char *name) {
 
 static DWORD find_auto_game(char *name, size_t name_cap, char *path, size_t path_cap) {
     HANDLE snap;
-    PROCESSENTRY32A pe;
+    PROCESSENTRY32 pe;
     DWORD best_pid = 0;
     uint64_t best_score = 0;
     DWORD self = GetCurrentProcessId();
     snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return 0;
     memset(&pe, 0, sizeof(pe));
-    pe.dwSize = sizeof(pe);
-    if (Process32FirstA(snap, &pe)) {
+    pe.dwSize = (DWORD)sizeof(pe);
+    if (Process32First(snap, &pe)) {
         do {
             char image[DGL_PATH_CAP];
             HANDLE h;
@@ -587,8 +587,8 @@ static DWORD find_auto_game(char *name, size_t name_cap, char *path, size_t path
             h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
             if (!h) continue;
             memset(&pmc, 0, sizeof(pmc));
-            pmc.cb = sizeof(pmc);
-            if (!GetProcessMemoryInfo(h, (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof(pmc))) {
+            pmc.cb = (DWORD)sizeof(pmc);
+            if (!GetProcessMemoryInfo(h, (PROCESS_MEMORY_COUNTERS *)&pmc, (DWORD)sizeof(pmc))) {
                 CloseHandle(h);
                 continue;
             }
@@ -604,7 +604,7 @@ static DWORD find_auto_game(char *name, size_t name_cap, char *path, size_t path
                 snprintf(name, name_cap, "%s", pe.szExeFile);
                 snprintf(path, path_cap, "%s", image);
             }
-        } while (Process32NextA(snap, &pe));
+        } while (Process32Next(snap, &pe));
     }
     CloseHandle(snap);
     return best_pid;
@@ -644,7 +644,7 @@ static void detect_probe_runtime(probe_state *s) {
         "PROTON_VERSION", "PROTON_BUILD", "PROTONPATH", "STEAM_COMPAT_TOOL_PATHS", NULL
     };
     static const char *const wrapper_keys[] = {
-        "WINLATOR_WRAPPER", "WRAPPER_NAME", "WRAPPER", "MESA_LOADER_DRIVER_OVERRIDE", NULL
+        "WINLATOR_WRAPPER", "WINLATOR_VERSION", "WRAPPER_NAME", "WRAPPER", NULL
     };
     bool box = false, fex = false;
     if (ntdll) {
@@ -658,21 +658,21 @@ static void detect_probe_runtime(probe_state *s) {
     if (env_first(proton_keys, proton_hint, sizeof(proton_hint))) {
         const char *hint = base_name(proton_hint);
         snprintf(s->proton_version, sizeof(s->proton_version), "%s", hint && hint[0] ? hint : proton_hint);
-    } else if (GetEnvironmentVariableA("STEAM_COMPAT_DATA_PATH", value, sizeof(value)) > 0 ||
-               GetEnvironmentVariableA("PROTON_LOG", value, sizeof(value)) > 0 ||
-               GetEnvironmentVariableA("PROTON_VERB", value, sizeof(value)) > 0) {
+    } else if (GetEnvironmentVariableA("STEAM_COMPAT_DATA_PATH", value, (DWORD)sizeof(value)) > 0 ||
+               GetEnvironmentVariableA("PROTON_LOG", value, (DWORD)sizeof(value)) > 0 ||
+               GetEnvironmentVariableA("PROTON_VERB", value, (DWORD)sizeof(value)) > 0) {
         snprintf(s->proton_version, sizeof(s->proton_version), "detected (version unavailable)");
     }
     (void)env_value("BOX64_VERSION", box_version, sizeof(box_version));
     (void)env_value("FEX_VERSION", fex_version, sizeof(fex_version));
     if (env_first(wrapper_keys, wrapper_hint, sizeof(wrapper_hint)))
         snprintf(s->wrapper_identity, sizeof(s->wrapper_identity), "%s", base_name(wrapper_hint));
-    if (GetEnvironmentVariableA("BOX64_DYNAREC", value, sizeof(value)) > 0 ||
-        GetEnvironmentVariableA("BOX64_PATH", value, sizeof(value)) > 0 ||
-        GetEnvironmentVariableA("BOX64_LD_LIBRARY_PATH", value, sizeof(value)) > 0) box = true;
-    if (GetEnvironmentVariableA("FEX_ROOTFS", value, sizeof(value)) > 0 ||
-        GetEnvironmentVariableA("FEX_APP_CONFIG_LOCATION", value, sizeof(value)) > 0 ||
-        GetEnvironmentVariableA("FEX_OUTPUTLOG", value, sizeof(value)) > 0) fex = true;
+    if (GetEnvironmentVariableA("BOX64_DYNAREC", value, (DWORD)sizeof(value)) > 0 ||
+        GetEnvironmentVariableA("BOX64_PATH", value, (DWORD)sizeof(value)) > 0 ||
+        GetEnvironmentVariableA("BOX64_LD_LIBRARY_PATH", value, (DWORD)sizeof(value)) > 0) box = true;
+    if (GetEnvironmentVariableA("FEX_ROOTFS", value, (DWORD)sizeof(value)) > 0 ||
+        GetEnvironmentVariableA("FEX_APP_CONFIG_LOCATION", value, (DWORD)sizeof(value)) > 0 ||
+        GetEnvironmentVariableA("FEX_OUTPUTLOG", value, (DWORD)sizeof(value)) > 0) fex = true;
     if (box && fex) {
         if (box_version[0] || fex_version[0])
             snprintf(s->translator, sizeof(s->translator), "Box64%s%s + FEX%s%s",
@@ -762,7 +762,7 @@ static void update_stack_summary(probe_state *s, bool seen_dxvk, bool seen_vkd3d
 
 static void scan_modules(probe_state *s) {
     HANDLE snap;
-    MODULEENTRY32A me;
+    MODULEENTRY32 me;
     char out_path[DGL_PATH_CAP];
     FILE *f;
     bool seen_dxvk = false, seen_vkd3d = false, seen_winevulkan = false, seen_vulkan = false;
@@ -778,8 +778,8 @@ static void scan_modules(probe_state *s) {
         return;
     }
     memset(&me, 0, sizeof(me));
-    me.dwSize = sizeof(me);
-    if (Module32FirstA(snap, &me)) {
+    me.dwSize = (DWORD)sizeof(me);
+    if (Module32First(snap, &me)) {
         do {
             char hash[65] = "";
             char identity[DGL_TEXT_CAP] = "";
@@ -832,7 +832,7 @@ static void scan_modules(probe_state *s) {
                     module_identity.product_version[0] ? module_identity.product_version : "",
                     module_identity.file_version[0] ? module_identity.file_version : "",
                     identity[0] ? identity : "not-embedded");
-        } while (Module32NextA(snap, &me));
+        } while (Module32Next(snap, &me));
     }
     CloseHandle(snap);
     fclose(f);
@@ -910,10 +910,10 @@ static void discover_external_logs(probe_state *s) {
     if (!s->session_open) return;
     dirname_copy(s->process_path, dir, sizeof(dir));
     discover_logs_in_dir(s, dir);
-    if (GetCurrentDirectoryA(sizeof(cwd), cwd)) discover_logs_in_dir(s, cwd);
-    if (GetEnvironmentVariableA("DXVK_LOG_PATH", env, sizeof(env)) > 0) discover_logs_in_dir(s, env);
-    if (GetEnvironmentVariableA("PROTON_LOG_DIR", env, sizeof(env)) > 0) discover_logs_in_dir(s, env);
-    if (GetEnvironmentVariableA("VKD3D_LOG_FILE", explicit_file, sizeof(explicit_file)) > 0) {
+    if (GetCurrentDirectoryA((DWORD)sizeof(cwd), cwd)) discover_logs_in_dir(s, cwd);
+    if (GetEnvironmentVariableA("DXVK_LOG_PATH", env, (DWORD)sizeof(env)) > 0) discover_logs_in_dir(s, env);
+    if (GetEnvironmentVariableA("PROTON_LOG_DIR", env, (DWORD)sizeof(env)) > 0) discover_logs_in_dir(s, env);
+    if (GetEnvironmentVariableA("VKD3D_LOG_FILE", explicit_file, (DWORD)sizeof(explicit_file)) > 0) {
         tag = "VKD3D";
         (void)add_tail_path(s, explicit_file, tag, false);
     }
@@ -1150,7 +1150,8 @@ static int open_session(probe_state *s) {
     if (mkdir_tree(s->sessions_dir) != 0) return -1;
 
     session_stamp(stamp, sizeof(stamp));
-    snprintf(s->session_id, sizeof(s->session_id), "%s-p%lu", stamp, (unsigned long)s->pid);
+    snprintf(s->session_id, sizeof(s->session_id), "%s-p%lu-q%016llx", stamp,
+             (unsigned long)s->pid, (unsigned long long)qpc_ns());
     path_join(s->session_dir, sizeof(s->session_dir), s->sessions_dir, s->session_id);
     if (mkdir_tree(s->session_dir) != 0) return -1;
     path_join(s->raw_dir, sizeof(s->raw_dir), s->session_dir, "raw"); mkdir_tree(s->raw_dir);
@@ -1525,7 +1526,7 @@ static void drain_udp(probe_state *s) {
     for (;;) {
         char buf[DGL_MAX_EVENT_BYTES + 1];
         struct sockaddr_in from;
-        int fromlen = sizeof(from);
+        int fromlen = (int)sizeof(from);
         int n = recvfrom(s->udp, buf, DGL_MAX_EVENT_BYTES, 0,
                          (struct sockaddr *)&from, &fromlen);
         if (n == SOCKET_ERROR) {
@@ -1556,19 +1557,19 @@ static int capture_screen_bmp(const char *path) {
     old = (HBITMAP)SelectObject(mem, bmp);
     if (!BitBlt(mem, 0, 0, w, h, screen, 0, 0, SRCCOPY | CAPTUREBLT)) goto done;
     memset(&bih, 0, sizeof(bih));
-    bih.biSize = sizeof(bih); bih.biWidth = w; bih.biHeight = h; bih.biPlanes = 1;
+    bih.biSize = (DWORD)sizeof(bih); bih.biWidth = w; bih.biHeight = h; bih.biPlanes = 1;
     bih.biBitCount = 24; bih.biCompression = BI_RGB;
     stride = ((w * 3 + 3) & ~3);
     pixels = (BYTE *)malloc((size_t)stride * (size_t)h); if (!pixels) goto done;
     if (!GetDIBits(mem, bmp, 0, (UINT)h, pixels, (BITMAPINFO *)&bih, DIB_RGB_COLORS)) goto done;
     memset(&bfh, 0, sizeof(bfh));
     bfh.bfType = 0x4D42;
-    bfh.bfOffBits = sizeof(bfh) + sizeof(bih);
+    bfh.bfOffBits = (DWORD)(sizeof(bfh) + sizeof(bih));
     bfh.bfSize = bfh.bfOffBits + (DWORD)((size_t)stride * (size_t)h);
     f = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (f == INVALID_HANDLE_VALUE) goto done;
-    if (!WriteFile(f, &bfh, sizeof(bfh), &wrote, NULL)) goto done;
-    if (!WriteFile(f, &bih, sizeof(bih), &wrote, NULL)) goto done;
+    if (!WriteFile(f, &bfh, (DWORD)sizeof(bfh), &wrote, NULL)) goto done;
+    if (!WriteFile(f, &bih, (DWORD)sizeof(bih), &wrote, NULL)) goto done;
     if (!WriteFile(f, pixels, (DWORD)((size_t)stride * (size_t)h), &wrote, NULL)) goto done;
     rc = 0;
 done:
@@ -1706,7 +1707,7 @@ static int create_hud(probe_state *s) {
     WNDCLASSEXA wc;
     HINSTANCE inst = GetModuleHandleA(NULL);
     memset(&wc, 0, sizeof(wc));
-    wc.cbSize = sizeof(wc);
+    wc.cbSize = (UINT)sizeof(wc);
     wc.lpfnWndProc = hud_proc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
@@ -1780,7 +1781,7 @@ static void close_network_hud(probe_state *s) {
 
 static void default_lab_root(probe_state *s) {
     char profile[DGL_PATH_CAP];
-    DWORD n = GetEnvironmentVariableA("USERPROFILE", profile, sizeof(profile));
+    DWORD n = GetEnvironmentVariableA("USERPROFILE", profile, (DWORD)sizeof(profile));
     if (n > 0 && n < sizeof(profile))
         snprintf(s->lab_root, sizeof(s->lab_root), "%s\\Documents\\DriveGpuLab", profile);
     else
@@ -1795,11 +1796,11 @@ static int prepare_launch_environment(probe_state *s) {
     if (mkdir_tree(temp_root) != 0) return -1;
     snprintf(vkd3d, sizeof(vkd3d), "%s\\vkd3d-live.log", temp_root);
     SetEnvironmentVariableA("DXVK_LOG_PATH", temp_root);
-    if (!GetEnvironmentVariableA("DXVK_LOG_LEVEL", vkd3d, sizeof(vkd3d)))
+    if (!GetEnvironmentVariableA("DXVK_LOG_LEVEL", vkd3d, (DWORD)sizeof(vkd3d)))
         SetEnvironmentVariableA("DXVK_LOG_LEVEL", "info");
     snprintf(vkd3d, sizeof(vkd3d), "%s\\vkd3d-live.log", temp_root);
     SetEnvironmentVariableA("VKD3D_LOG_FILE", vkd3d);
-    if (!GetEnvironmentVariableA("VKD3D_DEBUG", temp_root, sizeof(temp_root)))
+    if (!GetEnvironmentVariableA("VKD3D_DEBUG", temp_root, (DWORD)sizeof(temp_root)))
         SetEnvironmentVariableA("VKD3D_DEBUG", "warn");
     return 0;
 }
@@ -1812,7 +1813,7 @@ static int launch_target(probe_state *s) {
     (void)prepare_launch_environment(s);
     memset(&si, 0, sizeof(si));
     memset(&pi, 0, sizeof(pi));
-    si.cb = sizeof(si);
+    si.cb = (DWORD)sizeof(si);
     if (s->launch_cmdline[0]) snprintf(cmd, sizeof(cmd), "%s", s->launch_cmdline);
     else snprintf(cmd, sizeof(cmd), "\"%s\"", s->launch_exe);
     if (!CreateProcessA(s->launch_exe, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {

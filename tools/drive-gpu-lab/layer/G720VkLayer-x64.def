@@ -1,0 +1,5 @@
+LIBRARY G720VkLayer
+EXPORTS
+    dgl_vkNegotiateLoaderLayerInterfaceVersion
+    dgl_layerGetInstanceProcAddr
+    dgl_layerGetDeviceProcAddr
