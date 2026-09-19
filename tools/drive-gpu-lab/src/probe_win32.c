@@ -134,7 +134,6 @@ typedef struct probe_state {
     /* Networking / HUD. */
     SOCKET udp;
     struct sockaddr_in host_control_addr;
-    HWND hud_bg;
     HWND hud;
     HFONT hud_font;
     HFONT hud_font_small;
@@ -1627,8 +1626,7 @@ static void marker_capture(probe_state *s, bool screenshot) {
 
 #define DGL_HUD_WIDTH 590
 #define DGL_HUD_HEIGHT 438
-#define DGL_HUD_BG_ALPHA 140
-#define DGL_HUD_FG_ALPHA 255
+#define DGL_HUD_ALPHA 202
 #define DGL_HUD_KEY_COLOR RGB(1, 2, 3)
 
 static const COLORREF DGL_UI_PANEL = RGB(10, 23, 47);
@@ -1644,20 +1642,14 @@ static const COLORREF DGL_UI_YELLOW = RGB(255, 226, 63);
 static const COLORREF DGL_UI_RED = RGB(255, 82, 103);
 static const COLORREF DGL_UI_ORANGE = RGB(255, 164, 48);
 
-static void hud_round_fill(HDC dc, int left, int top, int right, int bottom,
-                           int radius, COLORREF fill) {
+static void hud_round_panel(HDC dc, int left, int top, int right, int bottom,
+                            int radius, COLORREF fill, COLORREF border) {
     HRGN region = CreateRoundRectRgn(left, top, right + 1, bottom + 1, radius, radius);
     HBRUSH fill_brush = CreateSolidBrush(fill);
-    if (region && fill_brush) FillRgn(dc, region, fill_brush);
-    if (fill_brush) DeleteObject(fill_brush);
-    if (region) DeleteObject(region);
-}
-
-static void hud_round_border(HDC dc, int left, int top, int right, int bottom,
-                             int radius, COLORREF border) {
-    HRGN region = CreateRoundRectRgn(left, top, right + 1, bottom + 1, radius, radius);
     HBRUSH border_brush = CreateSolidBrush(border);
+    if (region && fill_brush) FillRgn(dc, region, fill_brush);
     if (region && border_brush) FrameRgn(dc, region, border_brush, 1, 1);
+    if (fill_brush) DeleteObject(fill_brush);
     if (border_brush) DeleteObject(border_brush);
     if (region) DeleteObject(region);
 }
@@ -1743,8 +1735,6 @@ static LRESULT CALLBACK hud_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_HOTKEY && s) {
         if (wp == DGL_HOTKEY_TOGGLE) {
             s->hud_visible = !s->hud_visible;
-            if (s->hud_bg)
-                ShowWindow(s->hud_bg, s->hud_visible ? SW_SHOWNOACTIVATE : SW_HIDE);
             ShowWindow(hwnd, s->hud_visible ? SW_SHOWNOACTIVATE : SW_HIDE);
         } else if (wp == DGL_HOTKEY_MARK) {
             marker_capture(s, false);
@@ -1806,14 +1796,8 @@ static LRESULT CALLBACK hud_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         SetBkMode(mem, TRANSPARENT);
 
-        if (hwnd == s->hud_bg) {
-            hud_round_fill(mem, 0, 0, 586, 44, 16, DGL_UI_PANEL_2);
-            hud_round_fill(mem, 0, 52, 586, 178, 15, DGL_UI_PANEL);
-            hud_round_fill(mem, 0, 186, 586, 352, 15, DGL_UI_PANEL);
-            hud_round_fill(mem, 0, 360, 586, 434, 15, DGL_UI_PANEL);
-        } else {
-            hud_round_border(mem, 0, 0, 586, 44, 16, DGL_UI_BORDER);
-            hud_draw_chip(mem, 12, 8);
+        hud_round_panel(mem, 0, 0, 586, 44, 16, DGL_UI_PANEL_2, DGL_UI_BORDER);
+        hud_draw_chip(mem, 12, 8);
         hud_text(mem, s->hud_font_title, DGL_UI_TEXT, 50, 12, "Drive GPU Lab");
         hud_textf(mem, s->hud_font_small, DGL_UI_MUTED, 198, 15, "%s",
                   DGL_VERSION_STRING);
@@ -1827,7 +1811,7 @@ static LRESULT CALLBACK hud_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         hud_line(mem, 556, 15, 568, 27, DGL_UI_TEXT);
         hud_line(mem, 568, 15, 556, 27, DGL_UI_TEXT);
 
-        hud_round_border(mem, 0, 52, 586, 178, 15, DGL_UI_BORDER);
+        hud_round_panel(mem, 0, 52, 586, 178, 15, DGL_UI_PANEL, DGL_UI_BORDER);
         hud_line(mem, 306, 66, 306, 164, RGB(58, 80, 114));
 
         hud_text(mem, s->hud_font, DGL_UI_YELLOW, 20, 65, "GAME");
@@ -1847,7 +1831,7 @@ static LRESULT CALLBACK hud_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         hud_text(mem, s->hud_font, DGL_UI_GREEN, 332, 111, "TRANSLATOR");
         hud_textf(mem, s->hud_font, DGL_UI_TEXT, 451, 111, "%.13s", translator);
 
-        hud_round_border(mem, 0, 186, 586, 352, 15, DGL_UI_BORDER);
+        hud_round_panel(mem, 0, 186, 586, 352, 15, DGL_UI_PANEL, DGL_UI_BORDER);
 
         hud_text(mem, s->hud_font, DGL_UI_GREEN, 20, 199, "FPS");
         hud_textf(mem, s->hud_font, DGL_UI_TEXT, 76, 199, "%.2f", s->m.fps);
@@ -1905,7 +1889,7 @@ static LRESULT CALLBACK hud_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         hud_text(mem, s->hud_font, DGL_UI_BLUE, 239, 324, "PEAK");
         hud_textf(mem, s->hud_font, DGL_UI_TEXT, 304, 324, "%.1f MB", vk_peak_mb);
 
-        hud_round_border(mem, 0, 360, 586, 434, 15, DGL_UI_BORDER);
+        hud_round_panel(mem, 0, 360, 586, 434, 15, DGL_UI_PANEL, DGL_UI_BORDER);
         hud_text(mem, s->hud_font_small, DGL_UI_BLUE, 20, 372, "FRAMES");
         hud_textf(mem, s->hud_font_small, DGL_UI_TEXT, 77, 372, "%llu",
                   (unsigned long long)s->m.frames_seen);
@@ -1932,7 +1916,6 @@ static LRESULT CALLBACK hud_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         hud_text(mem, s->hud_font_small, DGL_UI_MUTED, 321, 407, "DEEP");
         hud_text(mem, s->hud_font_small, DGL_UI_CYAN, 369, 407, "F11");
         hud_text(mem, s->hud_font_small, DGL_UI_MUTED, 399, 407, "MARK+SHOT");
-        }
 
         BitBlt(dc, 0, 0, client.right - client.left, client.bottom - client.top,
                mem, 0, 0, SRCCOPY);
@@ -1945,7 +1928,7 @@ static LRESULT CALLBACK hud_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     if (msg == WM_DESTROY) {
-        if (s && hwnd == s->hud) PostQuitMessage(0);
+        PostQuitMessage(0);
         return 0;
     }
     return DefWindowProcA(hwnd, msg, wp, lp);
@@ -1970,36 +1953,15 @@ static int create_hud(probe_state *s) {
     if (!RegisterClassExA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
         return -1;
 
-    s->hud_bg = CreateWindowExA(ex_style, DGL_HUD_CLASS,
-                                "Drive GPU Lab Background", WS_POPUP,
-                                18, 18, DGL_HUD_WIDTH, DGL_HUD_HEIGHT,
-                                NULL, NULL, inst, NULL);
-    if (!s->hud_bg) return -1;
-
-    if (!SetLayeredWindowAttributes(s->hud_bg, DGL_HUD_KEY_COLOR,
-                                    DGL_HUD_BG_ALPHA,
-                                    LWA_ALPHA | LWA_COLORKEY)) {
-        DestroyWindow(s->hud_bg);
-        s->hud_bg = NULL;
-        return -1;
-    }
-
     s->hud = CreateWindowExA(ex_style, DGL_HUD_CLASS, "Drive GPU Lab", WS_POPUP,
                              18, 18, DGL_HUD_WIDTH, DGL_HUD_HEIGHT,
                              NULL, NULL, inst, NULL);
-    if (!s->hud) {
-        DestroyWindow(s->hud_bg);
-        s->hud_bg = NULL;
-        return -1;
-    }
+    if (!s->hud) return -1;
 
-    if (!SetLayeredWindowAttributes(s->hud, DGL_HUD_KEY_COLOR,
-                                    DGL_HUD_FG_ALPHA,
+    if (!SetLayeredWindowAttributes(s->hud, DGL_HUD_KEY_COLOR, DGL_HUD_ALPHA,
                                     LWA_ALPHA | LWA_COLORKEY)) {
         DestroyWindow(s->hud);
         s->hud = NULL;
-        DestroyWindow(s->hud_bg);
-        s->hud_bg = NULL;
         return -1;
     }
 
@@ -2031,10 +1993,6 @@ static int create_hud(probe_state *s) {
         }
         DestroyWindow(s->hud);
         s->hud = NULL;
-        if (s->hud_bg) {
-            DestroyWindow(s->hud_bg);
-            s->hud_bg = NULL;
-        }
         return -1;
     }
 
@@ -2044,8 +2002,6 @@ static int create_hud(probe_state *s) {
     RegisterHotKey(s->hud, DGL_HOTKEY_SHOT, 0, VK_F11);
 
     s->hud_visible = true;
-    ShowWindow(s->hud_bg, SW_SHOWNOACTIVATE);
-    UpdateWindow(s->hud_bg);
     ShowWindow(s->hud, SW_SHOWNOACTIVATE);
     UpdateWindow(s->hud);
     return 0;
@@ -2093,10 +2049,6 @@ static void close_network_hud(probe_state *s) {
         UnregisterHotKey(s->hud, DGL_HOTKEY_SHOT);
         DestroyWindow(s->hud);
         s->hud = NULL;
-    }
-    if (s->hud_bg) {
-        DestroyWindow(s->hud_bg);
-        s->hud_bg = NULL;
     }
     if (s->hud_font) { DeleteObject(s->hud_font); s->hud_font = NULL; }
     if (s->hud_font_small) { DeleteObject(s->hud_font_small); s->hud_font_small = NULL; }
