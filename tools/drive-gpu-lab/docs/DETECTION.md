@@ -7,6 +7,10 @@ Drive GPU Lab follows an evidence-first rule: **identify when observable; otherw
 
 Windows version resources provide ProductName/ProductVersion/FileDescription/FileVersion. The executable itself is SHA-256 hashed.
 
+### Automatic target selection
+
+In automatic mode, Drive GPU Lab does not attach merely because a process owns a large visible window. A candidate PID must first emit a valid `vklayer` `device` event from the explicit Drive GPU Lab Vulkan layer, remain alive, own a visible window, and not match a known Wine shell/utility process. Explicit `--pid` and `--process` modes remain available for controlled cases where automatic Vulkan evidence is intentionally unavailable.
+
 ## Wine / Proton
 
 Wine version is read from Wine's `ntdll` runtime export when present. Proton is marked as detected only from Proton/Steam compatibility environment evidence. The tool does not synthesize a Proton version from an unrelated Wine version.

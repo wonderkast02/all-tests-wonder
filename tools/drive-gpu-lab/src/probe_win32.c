@@ -18,6 +18,7 @@
 #include "sha256.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdarg.h>
@@ -87,6 +88,15 @@ typedef struct file_identity {
     char file_version[DGL_TEXT_CAP];
 } file_identity;
 
+#define DGL_PENDING_DEVICE_SLOTS 16
+#define DGL_PENDING_DEVICE_TTL_NS 30000000000ull
+
+typedef struct pending_device_event {
+    DWORD pid;
+    uint64_t rx_qpc_ns;
+    char json[DGL_MAX_EVENT_BYTES + 1];
+} pending_device_event;
+
 typedef struct probe_state {
     /* CLI / lifetime. */
     char requested_process[MAX_PATH];
@@ -141,6 +151,22 @@ typedef struct probe_state {
     bool hud_visible;
     bool deep_mode;
 
+    /* Metric validity: unavailable is never silently coerced to zero. */
+    bool process_cpu_valid;
+    bool process_mem_valid;
+    bool gpu_busy_valid;
+    bool gpu_freq_valid;
+    bool gpu_min_freq_valid;
+    bool gpu_max_freq_valid;
+    bool gpu_temp_valid;
+    bool mem_total_valid;
+    bool mem_available_valid;
+    bool swap_free_valid;
+    bool vk_memory_valid;
+
+    /* Pre-attach Vulkan identity cache, keyed by producer PID. */
+    pending_device_event pending_device[DGL_PENDING_DEVICE_SLOTS];
+
     /* Time / sampling. */
     uint64_t process_start_qpc_ns;
     uint64_t session_start_qpc_ns;
@@ -194,6 +220,10 @@ typedef struct probe_state {
 } probe_state;
 
 static probe_state *g_state = NULL;
+
+static void process_datagram(probe_state *s, char *buf, int len);
+static void replay_pending_device(probe_state *s);
+static void close_session_files(probe_state *s);
 
 static uint64_t filetime_u64(FILETIME ft) {
     ULARGE_INTEGER u;
@@ -287,18 +317,163 @@ static void master_log(probe_state *s, const char *tag, const char *message) {
     dgl_ring_push(&s->ring, ++s->event_seq, ringline);
 }
 
-static void timeline_raw_event(probe_state *s, const char *raw_json) {
-    uint64_t now = qpc_ns();
+
+typedef struct wire_json_cursor {
+    const char *p;
+    unsigned depth;
+} wire_json_cursor;
+
+static void wire_json_ws(wire_json_cursor *c) {
+    while (*c->p == ' ' || *c->p == '\t' || *c->p == '\r' || *c->p == '\n') ++c->p;
+}
+
+static bool wire_json_string_token(wire_json_cursor *c) {
+    const unsigned char *p = (const unsigned char *)c->p;
+    if (*p != '"') return false;
+    ++p;
+    while (*p) {
+        unsigned char ch = *p++;
+        if (ch == '"') {
+            c->p = (const char *)p;
+            return true;
+        }
+        if (ch < 0x20) return false;
+        if (ch == '\\') {
+            unsigned char esc = *p++;
+            unsigned i;
+            if (!esc) return false;
+            if (esc == 'u') {
+                for (i = 0; i < 4; ++i) {
+                    if (!isxdigit((unsigned char)p[i])) return false;
+                }
+                p += 4;
+            } else if (!strchr("\"\\/bfnrt", (int)esc)) {
+                return false;
+            }
+        }
+    }
+    return false;
+}
+
+static bool wire_json_value(wire_json_cursor *c);
+
+static bool wire_json_number(wire_json_cursor *c) {
+    const char *p = c->p;
+    if (*p == '-') ++p;
+    if (*p == '0') {
+        ++p;
+    } else {
+        if (!isdigit((unsigned char)*p)) return false;
+        while (isdigit((unsigned char)*p)) ++p;
+    }
+    if (*p == '.') {
+        ++p;
+        if (!isdigit((unsigned char)*p)) return false;
+        while (isdigit((unsigned char)*p)) ++p;
+    }
+    if (*p == 'e' || *p == 'E') {
+        ++p;
+        if (*p == '+' || *p == '-') ++p;
+        if (!isdigit((unsigned char)*p)) return false;
+        while (isdigit((unsigned char)*p)) ++p;
+    }
+    c->p = p;
+    return true;
+}
+
+static bool wire_json_array(wire_json_cursor *c) {
+    if (*c->p != '[' || c->depth >= 32u) return false;
+    ++c->p;
+    ++c->depth;
+    wire_json_ws(c);
+    if (*c->p == ']') {
+        ++c->p;
+        --c->depth;
+        return true;
+    }
+    for (;;) {
+        if (!wire_json_value(c)) return false;
+        wire_json_ws(c);
+        if (*c->p == ']') {
+            ++c->p;
+            --c->depth;
+            return true;
+        }
+        if (*c->p != ',') return false;
+        ++c->p;
+        wire_json_ws(c);
+    }
+}
+
+static bool wire_json_object(wire_json_cursor *c) {
+    if (*c->p != '{' || c->depth >= 32u) return false;
+    ++c->p;
+    ++c->depth;
+    wire_json_ws(c);
+    if (*c->p == '}') {
+        ++c->p;
+        --c->depth;
+        return true;
+    }
+    for (;;) {
+        if (!wire_json_string_token(c)) return false;
+        wire_json_ws(c);
+        if (*c->p != ':') return false;
+        ++c->p;
+        wire_json_ws(c);
+        if (!wire_json_value(c)) return false;
+        wire_json_ws(c);
+        if (*c->p == '}') {
+            ++c->p;
+            --c->depth;
+            return true;
+        }
+        if (*c->p != ',') return false;
+        ++c->p;
+        wire_json_ws(c);
+    }
+}
+
+static bool wire_json_value(wire_json_cursor *c) {
+    wire_json_ws(c);
+    if (*c->p == '"') return wire_json_string_token(c);
+    if (*c->p == '{') return wire_json_object(c);
+    if (*c->p == '[') return wire_json_array(c);
+    if (!strncmp(c->p, "true", 4)) { c->p += 4; return true; }
+    if (!strncmp(c->p, "false", 5)) { c->p += 5; return true; }
+    if (!strncmp(c->p, "null", 4)) { c->p += 4; return true; }
+    return wire_json_number(c);
+}
+
+static bool wire_json_validate_object(const char *json) {
+    wire_json_cursor c;
+    if (!json) return false;
+    c.p = json;
+    c.depth = 0;
+    wire_json_ws(&c);
+    if (!wire_json_object(&c)) return false;
+    wire_json_ws(&c);
+    return *c.p == '\0' && c.depth == 0;
+}
+
+static void timeline_raw_event_at(probe_state *s, const char *raw_json, uint64_t now) {
+    char escaped[(DGL_MAX_EVENT_BYTES * 2) + 1];
     if (!s || !s->timeline || !raw_json) return;
-    if (raw_json[0] == '{') {
+    if (wire_json_validate_object(raw_json)) {
         fprintf(s->timeline, "{\"rx_qpc_ns\":%llu,\"event\":%s}\n",
                 (unsigned long long)now, raw_json);
     } else {
+        dgl_json_escape(raw_json, escaped, sizeof(escaped));
         fprintf(s->timeline,
-                "{\"rx_qpc_ns\":%llu,\"event\":{\"source\":\"unknown\",\"raw\":\"invalid-json\"}}\n",
-                (unsigned long long)now);
+                "{\"rx_qpc_ns\":%llu,\"event\":{\"v\":%d,\"source\":\"probe\","
+                "\"type\":\"invalid_datagram\",\"raw\":\"%s\"}}\n",
+                (unsigned long long)now, DGL_PROTOCOL_VERSION, escaped);
     }
     fflush(s->timeline);
+}
+
+static void timeline_raw_event(probe_state *s, const char *raw_json) {
+    timeline_raw_event_at(s, raw_json, qpc_ns());
 }
 
 static void timeline_text_event(probe_state *s, const char *source, const char *text) {
@@ -335,18 +510,30 @@ static uint64_t json_u64(const char *json, const char *key, uint64_t fallback) {
     const char *p = json_find_value(json, key);
     char *end = NULL;
     unsigned long long v;
-    if (!p || !strncmp(p, "null", 4)) return fallback;
+    if (!p) return fallback;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (!strncmp(p, "null", 4) || *p == '-') return fallback;
+    errno = 0;
     v = strtoull(p, &end, 10);
-    return end == p ? fallback : (uint64_t)v;
+    if (end == p || errno == ERANGE) return fallback;
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') ++end;
+    if (*end && *end != ',' && *end != '}' && *end != ']') return fallback;
+    return (uint64_t)v;
 }
 
 static int64_t json_i64(const char *json, const char *key, int64_t fallback) {
     const char *p = json_find_value(json, key);
     char *end = NULL;
     long long v;
-    if (!p || !strncmp(p, "null", 4)) return fallback;
+    if (!p) return fallback;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (!strncmp(p, "null", 4)) return fallback;
+    errno = 0;
     v = strtoll(p, &end, 10);
-    return end == p ? fallback : (int64_t)v;
+    if (end == p || errno == ERANGE) return fallback;
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') ++end;
+    if (*end && *end != ',' && *end != '}' && *end != ']') return fallback;
+    return (int64_t)v;
 }
 
 static void json_string(const char *json, const char *key, char *out, size_t cap) {
@@ -517,6 +704,7 @@ static bool ignored_process_name(const char *name) {
         "explorer.exe", "services.exe", "winedevice.exe", "plugplay.exe", "rpcss.exe",
         "svchost.exe", "winemenubuilder.exe", "wineboot.exe", "start.exe", "cmd.exe",
         "conhost.exe", "rundll32.exe", "regedit.exe", "taskmgr.exe", "msiexec.exe",
+        "wfm.exe", "winefile.exe",
         "G720Probe.exe", "G720Probe-x64.exe", "G720Probe-x86.exe", NULL
     };
     int i;
@@ -568,48 +756,54 @@ static DWORD find_process_by_name(const char *name) {
     return pid;
 }
 
-static DWORD find_auto_game(char *name, size_t name_cap, char *path, size_t path_cap) {
-    HANDLE snap;
-    PROCESSENTRY32 pe;
+static DWORD find_auto_game(probe_state *s, char *name, size_t name_cap,
+                            char *path, size_t path_cap) {
+    size_t i;
     DWORD best_pid = 0;
-    uint64_t best_score = 0;
-    DWORD self = GetCurrentProcessId();
-    snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return 0;
-    memset(&pe, 0, sizeof(pe));
-    pe.dwSize = (DWORD)sizeof(pe);
-    if (Process32First(snap, &pe)) {
-        do {
-            char image[DGL_PATH_CAP];
-            HANDLE h;
-            PROCESS_MEMORY_COUNTERS_EX pmc;
-            window_score_ctx wc;
-            uint64_t score;
-            if (pe.th32ProcessID == 0 || pe.th32ProcessID == self || ignored_process_name(pe.szExeFile)) continue;
-            if (!process_image_path(pe.th32ProcessID, image, sizeof(image))) continue;
-            h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
-            if (!h) continue;
-            memset(&pmc, 0, sizeof(pmc));
-            pmc.cb = (DWORD)sizeof(pmc);
-            if (!GetProcessMemoryInfo(h, (PROCESS_MEMORY_COUNTERS *)&pmc, (DWORD)sizeof(pmc))) {
-                CloseHandle(h);
-                continue;
-            }
-            CloseHandle(h);
-            memset(&wc, 0, sizeof(wc));
-            wc.pid = pe.th32ProcessID;
-            EnumWindows(score_window_proc, (LPARAM)&wc);
-            if (!wc.area) continue;
-            score = wc.area / 1024ull + (uint64_t)pmc.WorkingSetSize / (1024ull * 1024ull);
-            if (score > best_score) {
-                best_score = score;
-                best_pid = pe.th32ProcessID;
-                snprintf(name, name_cap, "%s", pe.szExeFile);
-                snprintf(path, path_cap, "%s", image);
-            }
-        } while (Process32Next(snap, &pe));
+    uint64_t best_area = 0;
+    uint64_t best_rx = 0;
+    uint64_t now = qpc_ns();
+    if (!s) return 0;
+
+    for (i = 0; i < DGL_PENDING_DEVICE_SLOTS; ++i) {
+        pending_device_event *e = &s->pending_device[i];
+        char image[DGL_PATH_CAP];
+        const char *candidate;
+        window_score_ctx wc;
+
+        if (!e->pid) continue;
+        if (now < e->rx_qpc_ns ||
+            now - e->rx_qpc_ns > DGL_PENDING_DEVICE_TTL_NS) {
+            memset(e, 0, sizeof(*e));
+            continue;
+        }
+
+        if (!process_image_path(e->pid, image, sizeof(image))) {
+            memset(e, 0, sizeof(*e));
+            continue;
+        }
+
+        candidate = base_name(image);
+        if (ignored_process_name(candidate)) {
+            memset(e, 0, sizeof(*e));
+            continue;
+        }
+
+        memset(&wc, 0, sizeof(wc));
+        wc.pid = e->pid;
+        EnumWindows(score_window_proc, (LPARAM)&wc);
+        if (!wc.area) continue;
+
+        if (wc.area > best_area ||
+            (wc.area == best_area && e->rx_qpc_ns > best_rx)) {
+            best_area = wc.area;
+            best_rx = e->rx_qpc_ns;
+            best_pid = e->pid;
+            snprintf(name, name_cap, "%s", candidate);
+            snprintf(path, path_cap, "%s", image);
+        }
     }
-    CloseHandle(snap);
+
     return best_pid;
 }
 
@@ -1113,6 +1307,17 @@ static void reset_session_runtime(probe_state *s) {
     memset(&s->frames, 0, sizeof(s->frames));
     memset(&s->m, 0, sizeof(s->m));
     s->m.gpu_temp_mc = -1;
+    s->process_cpu_valid = false;
+    s->process_mem_valid = false;
+    s->gpu_busy_valid = false;
+    s->gpu_freq_valid = false;
+    s->gpu_min_freq_valid = false;
+    s->gpu_max_freq_valid = false;
+    s->gpu_temp_valid = false;
+    s->mem_total_valid = false;
+    s->mem_available_valid = false;
+    s->swap_free_valid = false;
+    s->vk_memory_valid = false;
     if (!s->ring.lines) (void)dgl_ring_init(&s->ring);
     else dgl_ring_reset(&s->ring);
     s->gpu_name[0] = '\0';
@@ -1157,10 +1362,14 @@ static int open_session(probe_state *s) {
              (unsigned long)s->pid, (unsigned long long)qpc_ns());
     path_join(s->session_dir, sizeof(s->session_dir), s->sessions_dir, s->session_id);
     if (mkdir_tree(s->session_dir) != 0) return -1;
-    path_join(s->raw_dir, sizeof(s->raw_dir), s->session_dir, "raw"); mkdir_tree(s->raw_dir);
-    path_join(s->events_dir, sizeof(s->events_dir), s->session_dir, "events"); mkdir_tree(s->events_dir);
-    path_join(s->perf_dir, sizeof(s->perf_dir), s->session_dir, "performance"); mkdir_tree(s->perf_dir);
-    path_join(s->screenshot_dir, sizeof(s->screenshot_dir), s->session_dir, "screenshots"); mkdir_tree(s->screenshot_dir);
+    path_join(s->raw_dir, sizeof(s->raw_dir), s->session_dir, "raw");
+    if (mkdir_tree(s->raw_dir) != 0) return -1;
+    path_join(s->events_dir, sizeof(s->events_dir), s->session_dir, "events");
+    if (mkdir_tree(s->events_dir) != 0) return -1;
+    path_join(s->perf_dir, sizeof(s->perf_dir), s->session_dir, "performance");
+    if (mkdir_tree(s->perf_dir) != 0) return -1;
+    path_join(s->screenshot_dir, sizeof(s->screenshot_dir), s->session_dir, "screenshots");
+    if (mkdir_tree(s->screenshot_dir) != 0) return -1;
 
     path_join(path, sizeof(path), s->session_dir, "MASTER.log"); s->master = fopen(path, "w");
     path_join(path, sizeof(path), s->session_dir, "timeline.jsonl"); s->timeline = fopen(path, "w");
@@ -1169,7 +1378,11 @@ static int open_session(probe_state *s) {
     path_join(path, sizeof(path), s->events_dir, "anomalies.jsonl"); s->anomalies = fopen(path, "w");
     path_join(path, sizeof(path), s->raw_dir, "hostd.jsonl"); s->host_raw = fopen(path, "w");
     path_join(path, sizeof(path), s->raw_dir, "vklayer.jsonl"); s->vk_raw = fopen(path, "w");
-    if (!s->master || !s->timeline || !s->telemetry) return -1;
+    if (!s->master || !s->timeline || !s->telemetry || !s->markers ||
+        !s->anomalies || !s->host_raw || !s->vk_raw) {
+        close_session_files(s);
+        return -1;
+    }
 
     fprintf(s->telemetry,
             "qpc_ns,pid,cpu_pct,working_set_mb,fps,frame_ms,p95_ms,p99_ms,p999_ms,"
@@ -1180,6 +1393,7 @@ static int open_session(probe_state *s) {
     s->session_open = true;
     s->session_start_qpc_ns = qpc_ns();
     detect_probe_runtime(s);
+    replay_pending_device(s);
 
     write_game_identity(s);
     append_game_history(s, "session_start");
@@ -1205,6 +1419,9 @@ static int open_session(probe_state *s) {
 
 static void write_summary(probe_state *s) {
     char path[DGL_PATH_CAP], utc[64];
+    char cpu[64] = "N/A", ram[64] = "N/A", busy[64] = "N/A";
+    char clock[64] = "N/A", temp[64] = "N/A";
+    char vk_alloc[64] = "N/A", vk_peak[64] = "N/A";
     FILE *f;
     uint64_t now = qpc_ns();
     double one_low = 0.0, point_one_low = 0.0;
@@ -1212,6 +1429,19 @@ static void write_summary(probe_state *s) {
     frame_recalc(&s->frames, now);
     if (s->frames.p99_ms > 0.0) one_low = 1000.0 / s->frames.p99_ms;
     if (s->frames.p999_ms > 0.0) point_one_low = 1000.0 / s->frames.p999_ms;
+    if (s->process_cpu_valid) snprintf(cpu, sizeof(cpu), "%.3f %%", s->m.process_cpu_pct);
+    if (s->process_mem_valid) snprintf(ram, sizeof(ram), "%.3f MB", s->m.process_mem_mb);
+    if (s->gpu_busy_valid) snprintf(busy, sizeof(busy), "%.3f %%", s->m.gpu_busy_pct);
+    if (s->gpu_freq_valid) snprintf(clock, sizeof(clock), "%.3f MHz",
+                                    (double)s->m.gpu_freq_hz / 1000000.0);
+    if (s->gpu_temp_valid) snprintf(temp, sizeof(temp), "%.3f C",
+                                    (double)s->m.gpu_temp_mc / 1000.0);
+    if (s->vk_memory_valid) {
+        snprintf(vk_alloc, sizeof(vk_alloc), "%.3f MB",
+                 (double)s->m.vk_allocated_bytes / (1024.0 * 1024.0));
+        snprintf(vk_peak, sizeof(vk_peak), "%.3f MB",
+                 (double)s->m.vk_peak_allocated_bytes / (1024.0 * 1024.0));
+    }
     path_join(path, sizeof(path), s->session_dir, "summary.txt");
     f = fopen(path, "w");
     if (!f) return;
@@ -1251,15 +1481,15 @@ static void write_summary(probe_state *s) {
             "P95 frametime: %.3f ms\n"
             "P99 frametime: %.3f ms\n"
             "P99.9 frametime: %.3f ms\n"
-            "Last process CPU: %.3f %%\n"
-            "Last process RAM: %.3f MB\n"
-            "Last GPU busy: %.3f %%\n"
-            "Last GPU clock: %.3f MHz\n"
-            "Last GPU temp: %.3f C\n"
-            "Vulkan allocated: %.3f MB\n"
-            "Vulkan peak allocated: %.3f MB\n"
+            "Last process CPU: %s\n"
+            "Last process RAM: %s\n"
+            "Last GPU busy: %s\n"
+            "Last GPU clock: %s\n"
+            "Last GPU temp: %s\n"
+            "Vulkan allocated: %s\n"
+            "Vulkan peak allocated: %s\n"
             "UDP events: %llu\n"
-            "UDP receive/drop errors: %llu\n"
+            "UDP dropped/filtered/invalid: %llu\n"
             "External log lines merged: %llu\n"
             "Markers: %llu\n"
             "Anomalies: %llu\n"
@@ -1284,19 +1514,20 @@ static void write_summary(probe_state *s) {
             s->host_identity[0] ? s->host_identity : "unavailable",
             s->host_kbase[0] ? s->host_kbase : "unavailable",
             s->host_governor[0] ? s->host_governor : "unavailable",
-            (unsigned long long)s->frames.frames, s->frames.avg_fps, one_low, point_one_low,
-            s->frames.current_ms, s->frames.p95_ms, s->frames.p99_ms, s->frames.p999_ms,
-            s->m.process_cpu_pct, s->m.process_mem_mb, s->m.gpu_busy_pct,
-            (double)s->m.gpu_freq_hz / 1000000.0,
-            s->m.gpu_temp_mc > 0 ? (double)s->m.gpu_temp_mc / 1000.0 : 0.0,
-            (double)s->m.vk_allocated_bytes / (1024.0 * 1024.0),
-            (double)s->m.vk_peak_allocated_bytes / (1024.0 * 1024.0),
-            (unsigned long long)s->udp_events, (unsigned long long)s->udp_dropped,
-            (unsigned long long)s->external_lines, (unsigned long long)s->markers_count,
-            (unsigned long long)s->anomalies_count, (unsigned long long)s->device_lost_count,
+            (unsigned long long)s->frames.frames, s->frames.avg_fps, one_low,
+            point_one_low, s->frames.current_ms, s->frames.p95_ms,
+            s->frames.p99_ms, s->frames.p999_ms,
+            cpu, ram, busy, clock, temp, vk_alloc, vk_peak,
+            (unsigned long long)s->udp_events,
+            (unsigned long long)s->udp_dropped,
+            (unsigned long long)s->external_lines,
+            (unsigned long long)s->markers_count,
+            (unsigned long long)s->anomalies_count,
+            (unsigned long long)s->device_lost_count,
             (unsigned long long)s->ring.overwritten);
     fclose(f);
 }
+
 
 static void close_tail_sources(probe_state *s) {
     size_t i;
@@ -1389,7 +1620,7 @@ static void try_attach_target(probe_state *s) {
         if (!pid || !process_image_path(pid, path, sizeof(path))) return;
         snprintf(name, sizeof(name), "%s", s->requested_process);
     } else if (s->auto_mode) {
-        pid = find_auto_game(name, sizeof(name), path, sizeof(path));
+        pid = find_auto_game(s, name, sizeof(name), path, sizeof(path));
     }
     if (pid) (void)attach_target(s, pid, name, path);
 }
@@ -1413,103 +1644,280 @@ static void sample_process(probe_state *s, uint64_t now_ns) {
         if (s->prev_proc_100ns && now_ns > s->prev_cpu_sample_qpc_ns) {
             delta100 = proc100 - s->prev_proc_100ns;
             wall100 = (now_ns - s->prev_cpu_sample_qpc_ns) / 100ull;
-            if (wall100) s->m.process_cpu_pct = 100.0 * (double)delta100 / (double)wall100;
+            if (wall100) {
+                double cpu = 100.0 * (double)delta100 /
+                             ((double)wall100 * (double)s->cpu_count);
+                if (cpu < 0.0) cpu = 0.0;
+                if (cpu > 100.0) cpu = 100.0;
+                s->m.process_cpu_pct = cpu;
+                s->process_cpu_valid = true;
+            }
         }
         s->prev_proc_100ns = proc100;
         s->prev_cpu_sample_qpc_ns = now_ns;
     }
     memset(&pmc, 0, sizeof(pmc));
     pmc.cb = (DWORD)sizeof(pmc);
-    if (GetProcessMemoryInfo(s->process, (PROCESS_MEMORY_COUNTERS *)&pmc, (DWORD)sizeof(pmc)))
+    if (GetProcessMemoryInfo(s->process, (PROCESS_MEMORY_COUNTERS *)&pmc, (DWORD)sizeof(pmc))) {
         s->m.process_mem_mb = (double)pmc.WorkingSetSize / (1024.0 * 1024.0);
+        s->process_mem_valid = true;
+    }
 }
 
 static void write_telemetry(probe_state *s, uint64_t now_ns) {
+    char cpu[48] = "", ram[48] = "", gpu_busy[48] = "", gpu_freq[48] = "";
+    char gpu_min[48] = "", gpu_max[48] = "", gpu_temp[48] = "";
+    char mem_total[48] = "", mem_avail[48] = "", swap_free[48] = "";
+    char vk_alloc[48] = "", vk_peak[48] = "";
     if (!s->telemetry) return;
     frame_recalc(&s->frames, now_ns);
     s->m.fps = s->frames.fps_window;
     s->m.p95_ms = s->frames.p95_ms;
     s->m.p99_ms = s->frames.p99_ms;
+    if (s->process_cpu_valid) snprintf(cpu, sizeof(cpu), "%.3f", s->m.process_cpu_pct);
+    if (s->process_mem_valid) snprintf(ram, sizeof(ram), "%.3f", s->m.process_mem_mb);
+    if (s->gpu_busy_valid) snprintf(gpu_busy, sizeof(gpu_busy), "%.3f", s->m.gpu_busy_pct);
+    if (s->gpu_freq_valid) snprintf(gpu_freq, sizeof(gpu_freq), "%llu",
+                                    (unsigned long long)s->m.gpu_freq_hz);
+    if (s->gpu_min_freq_valid) snprintf(gpu_min, sizeof(gpu_min), "%llu",
+                                        (unsigned long long)s->m.gpu_min_freq_hz);
+    if (s->gpu_max_freq_valid) snprintf(gpu_max, sizeof(gpu_max), "%llu",
+                                        (unsigned long long)s->m.gpu_max_freq_hz);
+    if (s->gpu_temp_valid) snprintf(gpu_temp, sizeof(gpu_temp), "%lld",
+                                    (long long)s->m.gpu_temp_mc);
+    if (s->mem_total_valid) snprintf(mem_total, sizeof(mem_total), "%llu",
+                                     (unsigned long long)s->m.mem_total_kb);
+    if (s->mem_available_valid) snprintf(mem_avail, sizeof(mem_avail), "%llu",
+                                         (unsigned long long)s->m.mem_available_kb);
+    if (s->swap_free_valid) snprintf(swap_free, sizeof(swap_free), "%llu",
+                                     (unsigned long long)s->m.swap_free_kb);
+    if (s->vk_memory_valid) {
+        snprintf(vk_alloc, sizeof(vk_alloc), "%llu",
+                 (unsigned long long)s->m.vk_allocated_bytes);
+        snprintf(vk_peak, sizeof(vk_peak), "%llu",
+                 (unsigned long long)s->m.vk_peak_allocated_bytes);
+    }
     fprintf(s->telemetry,
-            "%llu,%lu,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%llu,%llu,%llu,%lld,"
-            "%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d\n",
+            "%llu,%lu,%s,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%s,%s,%s,%s,%s,"
+            "%s,%s,%s,%s,%s,%llu,%llu,%d\n",
             (unsigned long long)now_ns, (unsigned long)s->pid,
-            s->m.process_cpu_pct, s->m.process_mem_mb,
-            s->m.fps, s->m.frame_ms, s->m.p95_ms, s->m.p99_ms, s->frames.p999_ms,
-            s->m.gpu_busy_pct, (unsigned long long)s->m.gpu_freq_hz,
-            (unsigned long long)s->m.gpu_min_freq_hz, (unsigned long long)s->m.gpu_max_freq_hz,
-            (long long)s->m.gpu_temp_mc,
-            (unsigned long long)s->m.mem_total_kb, (unsigned long long)s->m.mem_available_kb,
-            (unsigned long long)s->m.swap_free_kb,
-            (unsigned long long)s->m.vk_allocated_bytes,
-            (unsigned long long)s->m.vk_peak_allocated_bytes,
+            cpu, ram, s->m.fps, s->m.frame_ms, s->m.p95_ms, s->m.p99_ms,
+            s->frames.p999_ms, gpu_busy, gpu_freq, gpu_min, gpu_max, gpu_temp,
+            mem_total, mem_avail, swap_free, vk_alloc, vk_peak,
             (unsigned long long)s->m.frames_seen,
             (unsigned long long)s->m.submits_since_present, s->deep_mode ? 1 : 0);
     fflush(s->telemetry);
 }
 
+
+
+static void cache_pending_device(probe_state *s, DWORD pid, uint64_t rx_ns,
+                                 const char *json) {
+    size_t i, slot = 0;
+    uint64_t oldest = UINT64_MAX;
+    if (!s || !pid || !json) return;
+    for (i = 0; i < DGL_PENDING_DEVICE_SLOTS; ++i) {
+        if (s->pending_device[i].pid == pid) {
+            slot = i;
+            goto store;
+        }
+        if (s->pending_device[i].pid == 0) {
+            slot = i;
+            goto store;
+        }
+        if (s->pending_device[i].rx_qpc_ns < oldest) {
+            oldest = s->pending_device[i].rx_qpc_ns;
+            slot = i;
+        }
+    }
+store:
+    s->pending_device[slot].pid = pid;
+    s->pending_device[slot].rx_qpc_ns = rx_ns;
+    snprintf(s->pending_device[slot].json,
+             sizeof(s->pending_device[slot].json), "%s", json);
+}
+
+static void apply_vulkan_device_event(probe_state *s, const char *buf) {
+    if (!s || !buf) return;
+    json_string(buf, "gpu_name", s->gpu_name, sizeof(s->gpu_name));
+    json_string(buf, "driver_name", s->driver_name, sizeof(s->driver_name));
+    json_string(buf, "driver_info", s->driver_info, sizeof(s->driver_info));
+    json_string(buf, "api_version_string", s->vulkan_api, sizeof(s->vulkan_api));
+    json_string(buf, "driver_version_string", s->vulkan_driver_version,
+                sizeof(s->vulkan_driver_version));
+}
+
+static void replay_pending_device(probe_state *s) {
+    size_t i;
+    uint64_t now;
+    if (!s || !s->session_open || !s->pid) return;
+    now = qpc_ns();
+    for (i = 0; i < DGL_PENDING_DEVICE_SLOTS; ++i) {
+        pending_device_event *e = &s->pending_device[i];
+        if (e->pid != s->pid) continue;
+        if (now >= e->rx_qpc_ns && now - e->rx_qpc_ns <= DGL_PENDING_DEVICE_TTL_NS) {
+            ++s->udp_events;
+            timeline_raw_event_at(s, e->json, e->rx_qpc_ns);
+            if (s->vk_raw) {
+                fprintf(s->vk_raw, "%s\n", e->json);
+                fflush(s->vk_raw);
+            }
+            apply_vulkan_device_event(s, e->json);
+            master_log(s, "PROBE", "recovered pre-attach Vulkan device identity");
+        }
+        memset(e, 0, sizeof(*e));
+        return;
+    }
+}
+
 static void process_datagram(probe_state *s, char *buf, int len) {
-    char source[64], type[64];
+    char source[64] = "", type[64] = "";
     uint64_t now = qpc_ns();
     uint64_t submits;
-    if (len <= 0) return;
-    if (!s->session_open) return;
-    if (len >= DGL_MAX_EVENT_BYTES) { ++s->udp_dropped; return; }
+    uint64_t event_pid;
+    uint64_t version;
+    if (!s || !buf || len <= 0) return;
+    if (len >= DGL_MAX_EVENT_BYTES) {
+        if (s->session_open) ++s->udp_dropped;
+        return;
+    }
     buf[len] = '\0';
-    ++s->udp_events;
-    timeline_raw_event(s, buf);
+
+    if (!wire_json_validate_object(buf)) {
+        if (s->session_open) {
+            ++s->udp_dropped;
+            timeline_raw_event(s, buf);
+            master_log(s, "WARN", "invalid UDP JSON rejected");
+        }
+        return;
+    }
+
+    version = json_u64(buf, "v", UINT64_MAX);
     json_string(buf, "source", source, sizeof(source));
     json_string(buf, "type", type, sizeof(type));
-    if (!source[0]) snprintf(source, sizeof(source), "unknown");
-    if (!type[0]) snprintf(type, sizeof(type), "event");
+    if (version != DGL_PROTOCOL_VERSION) {
+        if (s->session_open) {
+            ++s->udp_dropped;
+            timeline_raw_event(s, buf);
+            master_log(s, "WARN", "UDP protocol version rejected");
+        }
+        return;
+    }
+    if (!source[0] || !type[0]) {
+        if (s->session_open) {
+            ++s->udp_dropped;
+            timeline_raw_event(s, buf);
+            master_log(s, "WARN", "UDP event missing source/type rejected");
+        }
+        return;
+    }
+
+    event_pid = json_u64(buf, "pid", 0);
+    if (!s->session_open) {
+        if (!_stricmp(source, "vklayer") && !_stricmp(type, "device") &&
+            event_pid > 0 && event_pid <= 0xffffffffull) {
+            cache_pending_device(s, (DWORD)event_pid, now, buf);
+        }
+        return;
+    }
+
+    if (!_stricmp(source, "vklayer")) {
+        if (event_pid == 0 || event_pid != (uint64_t)s->pid) {
+            ++s->udp_dropped;
+            return;
+        }
+    }
+
+    ++s->udp_events;
+    timeline_raw_event(s, buf);
     master_log(s, source, buf);
 
     if (!_stricmp(source, "hostd")) {
-        if (s->host_raw) { fprintf(s->host_raw, "%s\n", buf); fflush(s->host_raw); }
+        if (s->host_raw) {
+            fprintf(s->host_raw, "%s\n", buf);
+            fflush(s->host_raw);
+        }
         if (!_stricmp(type, "telemetry")) {
-            double busy = json_double(buf, "gpu_busy_pct", -1.0);
-            uint64_t freq = json_u64(buf, "gpu_freq_hz", 0);
-            uint64_t minf = json_u64(buf, "gpu_min_freq_hz", 0);
-            uint64_t maxf = json_u64(buf, "gpu_max_freq_hz", 0);
-            uint64_t mem_total = json_u64(buf, "mem_total_kb", 0);
-            uint64_t mem_avail = json_u64(buf, "mem_available_kb", 0);
-            uint64_t swap_free = json_u64(buf, "swap_free_kb", 0);
-            int64_t temp = json_i64(buf, "gpu_temp_mC", -1);
-            if (busy >= 0.0) s->m.gpu_busy_pct = busy;
-            if (freq) s->m.gpu_freq_hz = freq;
-            if (minf) s->m.gpu_min_freq_hz = minf;
-            if (maxf) s->m.gpu_max_freq_hz = maxf;
-            if (mem_total) s->m.mem_total_kb = mem_total;
-            if (mem_avail) s->m.mem_available_kb = mem_avail;
-            if (swap_free) s->m.swap_free_kb = swap_free;
-            if (temp >= 0) s->m.gpu_temp_mc = temp;
-            json_string(buf, "gpu_governor", s->host_governor, sizeof(s->host_governor));
+            double busy;
+            s->gpu_busy_valid = false;
+            s->gpu_freq_valid = false;
+            s->gpu_min_freq_valid = false;
+            s->gpu_max_freq_valid = false;
+            s->gpu_temp_valid = false;
+            s->mem_total_valid = false;
+            s->mem_available_valid = false;
+            s->swap_free_valid = false;
+            busy = json_double(buf, "gpu_busy_pct", -1.0);
+            uint64_t freq = json_u64(buf, "gpu_freq_hz", UINT64_MAX);
+            uint64_t minf = json_u64(buf, "gpu_min_freq_hz", UINT64_MAX);
+            uint64_t maxf = json_u64(buf, "gpu_max_freq_hz", UINT64_MAX);
+            uint64_t mem_total = json_u64(buf, "mem_total_kb", UINT64_MAX);
+            uint64_t mem_avail = json_u64(buf, "mem_available_kb", UINT64_MAX);
+            uint64_t swap_free = json_u64(buf, "swap_free_kb", UINT64_MAX);
+            int64_t temp = json_i64(buf, "gpu_temp_mC", INT64_MIN);
+            if (busy >= 0.0) {
+                s->m.gpu_busy_pct = busy;
+                s->gpu_busy_valid = true;
+            }
+            if (freq != UINT64_MAX) {
+                s->m.gpu_freq_hz = freq;
+                s->gpu_freq_valid = true;
+            }
+            if (minf != UINT64_MAX) {
+                s->m.gpu_min_freq_hz = minf;
+                s->gpu_min_freq_valid = true;
+            }
+            if (maxf != UINT64_MAX) {
+                s->m.gpu_max_freq_hz = maxf;
+                s->gpu_max_freq_valid = true;
+            }
+            if (mem_total != UINT64_MAX) {
+                s->m.mem_total_kb = mem_total;
+                s->mem_total_valid = true;
+            }
+            if (mem_avail != UINT64_MAX) {
+                s->m.mem_available_kb = mem_avail;
+                s->mem_available_valid = true;
+            }
+            if (swap_free != UINT64_MAX) {
+                s->m.swap_free_kb = swap_free;
+                s->swap_free_valid = true;
+            }
+            if (temp != INT64_MIN) {
+                s->m.gpu_temp_mc = temp;
+                s->gpu_temp_valid = true;
+            }
+            json_string(buf, "gpu_governor", s->host_governor,
+                        sizeof(s->host_governor));
         } else if (!_stricmp(type, "identity")) {
             char model[256], android[128], kbase[256];
             json_string(buf, "android_model", model, sizeof(model));
             json_string(buf, "android_release", android, sizeof(android));
             json_string(buf, "kbase_version", kbase, sizeof(kbase));
             snprintf(s->host_identity, sizeof(s->host_identity), "%s / Android %s",
-                     model[0] ? model : "Android host", android[0] ? android : "unknown");
+                     model[0] ? model : "Android host",
+                     android[0] ? android : "unknown");
             snprintf(s->host_android, sizeof(s->host_android), "%s", android);
             snprintf(s->host_kbase, sizeof(s->host_kbase), "%s", kbase);
         }
     } else if (!_stricmp(source, "vklayer")) {
-        if (s->vk_raw) { fprintf(s->vk_raw, "%s\n", buf); fflush(s->vk_raw); }
+        if (s->vk_raw) {
+            fprintf(s->vk_raw, "%s\n", buf);
+            fflush(s->vk_raw);
+        }
         if (!_stricmp(type, "frame")) {
             uint64_t source_frame_ns = json_u64(buf, "frame_ns", 0);
             submits = json_u64(buf, "submits", 0);
             frame_push(s, now, source_frame_ns, submits);
         } else if (!_stricmp(type, "device")) {
-            json_string(buf, "gpu_name", s->gpu_name, sizeof(s->gpu_name));
-            json_string(buf, "driver_name", s->driver_name, sizeof(s->driver_name));
-            json_string(buf, "driver_info", s->driver_info, sizeof(s->driver_info));
-            json_string(buf, "api_version_string", s->vulkan_api, sizeof(s->vulkan_api));
-            json_string(buf, "driver_version_string", s->vulkan_driver_version, sizeof(s->vulkan_driver_version));
+            apply_vulkan_device_event(s, buf);
             write_manifest(s, false);
         } else if (!_stricmp(type, "memory")) {
-            s->m.vk_allocated_bytes = json_u64(buf, "allocated_bytes", s->m.vk_allocated_bytes);
-            s->m.vk_peak_allocated_bytes = json_u64(buf, "peak_allocated_bytes", s->m.vk_peak_allocated_bytes);
+            uint64_t allocated = json_u64(buf, "allocated_bytes", UINT64_MAX);
+            uint64_t peak = json_u64(buf, "peak_allocated_bytes", UINT64_MAX);
+            if (allocated != UINT64_MAX) s->m.vk_allocated_bytes = allocated;
+            if (peak != UINT64_MAX) s->m.vk_peak_allocated_bytes = peak;
+            if (allocated != UINT64_MAX || peak != UINT64_MAX) s->vk_memory_valid = true;
         }
     }
 
@@ -1524,6 +1932,7 @@ static void process_datagram(probe_state *s, char *buf, int len) {
         }
     }
 }
+
 
 static void drain_udp(probe_state *s) {
     for (;;) {
@@ -1600,12 +2009,19 @@ static void marker_capture(probe_state *s, bool screenshot) {
              (unsigned long long)id, screenshot ? 1 : 0);
     master_log(s, "MARK", line);
     if (s->markers) {
+        char gpu_busy[48] = "null";
+        char gpu_freq[48] = "null";
+        if (s->gpu_busy_valid)
+            snprintf(gpu_busy, sizeof(gpu_busy), "%.3f", s->m.gpu_busy_pct);
+        if (s->gpu_freq_valid)
+            snprintf(gpu_freq, sizeof(gpu_freq), "%llu",
+                     (unsigned long long)s->m.gpu_freq_hz);
         fprintf(s->markers,
                 "{\"qpc_ns\":%llu,\"id\":%llu,\"pid\":%lu,\"fps\":%.3f,"
-                "\"frame_ms\":%.3f,\"gpu_busy_pct\":%.3f,\"gpu_freq_hz\":%llu}\n",
-                (unsigned long long)now, (unsigned long long)id, (unsigned long)s->pid,
-                s->m.fps, s->m.frame_ms, s->m.gpu_busy_pct,
-                (unsigned long long)s->m.gpu_freq_hz);
+                "\"frame_ms\":%.3f,\"gpu_busy_pct\":%s,\"gpu_freq_hz\":%s}\n",
+                (unsigned long long)now, (unsigned long long)id,
+                (unsigned long)s->pid, s->m.fps, s->m.frame_ms,
+                gpu_busy, gpu_freq);
         fflush(s->markers);
     }
     snprintf(ctx, sizeof(ctx), "%s\\marker-%03llu-context.log", s->events_dir, (unsigned long long)id);
@@ -1868,26 +2284,47 @@ static LRESULT CALLBACK hud_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                   s->frames.p999_ms);
 
         hud_text(mem, s->hud_font, DGL_UI_BLUE, 20, 276, "CPU GAME");
-        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 111, 276, "%.2f%%",
-                  s->m.process_cpu_pct);
+        if (s->process_cpu_valid)
+            hud_textf(mem, s->hud_font, DGL_UI_TEXT, 111, 276, "%.2f%%",
+                      s->m.process_cpu_pct);
+        else
+            hud_text(mem, s->hud_font, DGL_UI_MUTED, 111, 276, "N/A");
         hud_line(mem, 219, 274, 219, 336, RGB(54, 75, 108));
         hud_text(mem, s->hud_font, DGL_UI_BLUE, 239, 276, "RAM");
-        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 288, 276, "%.1f MB",
-                  s->m.process_mem_mb);
+        if (s->process_mem_valid)
+            hud_textf(mem, s->hud_font, DGL_UI_TEXT, 288, 276, "%.1f MB",
+                      s->m.process_mem_mb);
+        else
+            hud_text(mem, s->hud_font, DGL_UI_MUTED, 288, 276, "N/A");
 
         hud_text(mem, s->hud_font, DGL_UI_MAGENTA, 20, 300, "GPU LOAD");
-        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 111, 300, "%.2f%%",
-                  s->m.gpu_busy_pct);
+        if (s->gpu_busy_valid)
+            hud_textf(mem, s->hud_font, DGL_UI_TEXT, 111, 300, "%.2f%%",
+                      s->m.gpu_busy_pct);
+        else
+            hud_text(mem, s->hud_font, DGL_UI_MUTED, 111, 300, "N/A");
         hud_text(mem, s->hud_font, DGL_UI_BLUE, 239, 300, "CLOCK");
-        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 304, 300, "%.1f MHz",
-                  gpu_clock_mhz);
+        if (s->gpu_freq_valid)
+            hud_textf(mem, s->hud_font, DGL_UI_TEXT, 304, 300, "%.1f MHz",
+                      gpu_clock_mhz);
+        else
+            hud_text(mem, s->hud_font, DGL_UI_MUTED, 304, 300, "N/A");
         hud_text(mem, s->hud_font, DGL_UI_CYAN, 424, 300, "TEMP");
-        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 474, 300, "%.1f C", gpu_temp_c);
+        if (s->gpu_temp_valid)
+            hud_textf(mem, s->hud_font, DGL_UI_TEXT, 474, 300, "%.1f C", gpu_temp_c);
+        else
+            hud_text(mem, s->hud_font, DGL_UI_MUTED, 474, 300, "N/A");
 
         hud_text(mem, s->hud_font, DGL_UI_YELLOW, 20, 324, "VK MEM");
-        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 111, 324, "%.1f MB", vk_mem_mb);
+        if (s->vk_memory_valid)
+            hud_textf(mem, s->hud_font, DGL_UI_TEXT, 111, 324, "%.1f MB", vk_mem_mb);
+        else
+            hud_text(mem, s->hud_font, DGL_UI_MUTED, 111, 324, "N/A");
         hud_text(mem, s->hud_font, DGL_UI_BLUE, 239, 324, "PEAK");
-        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 304, 324, "%.1f MB", vk_peak_mb);
+        if (s->vk_memory_valid)
+            hud_textf(mem, s->hud_font, DGL_UI_TEXT, 304, 324, "%.1f MB", vk_peak_mb);
+        else
+            hud_text(mem, s->hud_font, DGL_UI_MUTED, 304, 324, "N/A");
 
         hud_round_panel(mem, 0, 360, 586, 434, 15, DGL_UI_PANEL, DGL_UI_BORDER);
         hud_text(mem, s->hud_font_small, DGL_UI_BLUE, 20, 372, "FRAMES");
@@ -1996,10 +2433,18 @@ static int create_hud(probe_state *s) {
         return -1;
     }
 
-    RegisterHotKey(s->hud, DGL_HOTKEY_TOGGLE, 0, VK_F8);
-    RegisterHotKey(s->hud, DGL_HOTKEY_MARK, 0, VK_F9);
-    RegisterHotKey(s->hud, DGL_HOTKEY_DEEP, 0, VK_F10);
-    RegisterHotKey(s->hud, DGL_HOTKEY_SHOT, 0, VK_F11);
+    if (!RegisterHotKey(s->hud, DGL_HOTKEY_TOGGLE, 0, VK_F8))
+        fprintf(stderr, "warning: F8 HUD hotkey unavailable (error=%lu).\n",
+                (unsigned long)GetLastError());
+    if (!RegisterHotKey(s->hud, DGL_HOTKEY_MARK, 0, VK_F9))
+        fprintf(stderr, "warning: F9 marker hotkey unavailable (error=%lu).\n",
+                (unsigned long)GetLastError());
+    if (!RegisterHotKey(s->hud, DGL_HOTKEY_DEEP, 0, VK_F10))
+        fprintf(stderr, "warning: F10 deep hotkey unavailable (error=%lu).\n",
+                (unsigned long)GetLastError());
+    if (!RegisterHotKey(s->hud, DGL_HOTKEY_SHOT, 0, VK_F11))
+        fprintf(stderr, "warning: F11 screenshot hotkey unavailable (error=%lu).\n",
+                (unsigned long)GetLastError());
 
     s->hud_visible = true;
     ShowWindow(s->hud, SW_SHOWNOACTIVATE);
@@ -2102,6 +2547,53 @@ static int launch_target(probe_state *s) {
     return 1;
 }
 
+
+static int cmdline_putc(char *dst, size_t cap, size_t *used, char ch) {
+    if (!dst || !used || *used + 1 >= cap) return 0;
+    dst[(*used)++] = ch;
+    dst[*used] = '\0';
+    return 1;
+}
+
+static int cmdline_append_quoted(char *dst, size_t cap, const char *arg) {
+    size_t used, i = 0;
+    bool quote;
+    if (!dst || cap < 2 || !arg) return 0;
+    used = strlen(dst);
+    if (used >= cap) return 0;
+    if (used && !cmdline_putc(dst, cap, &used, ' ')) return 0;
+    quote = !arg[0] || strpbrk(arg, " \t\"") != NULL;
+    if (!quote) {
+        size_t n = strlen(arg);
+        if (used + n >= cap) return 0;
+        memcpy(dst + used, arg, n + 1);
+        return 1;
+    }
+    if (!cmdline_putc(dst, cap, &used, '"')) return 0;
+    while (arg[i]) {
+        size_t slash = 0, j;
+        while (arg[i] == '\\') {
+            ++slash;
+            ++i;
+        }
+        if (arg[i] == '"') {
+            for (j = 0; j < slash * 2u + 1u; ++j)
+                if (!cmdline_putc(dst, cap, &used, '\\')) return 0;
+            if (!cmdline_putc(dst, cap, &used, '"')) return 0;
+            ++i;
+        } else if (!arg[i]) {
+            for (j = 0; j < slash * 2u; ++j)
+                if (!cmdline_putc(dst, cap, &used, '\\')) return 0;
+            break;
+        } else {
+            for (j = 0; j < slash; ++j)
+                if (!cmdline_putc(dst, cap, &used, '\\')) return 0;
+            if (!cmdline_putc(dst, cap, &used, arg[i++])) return 0;
+        }
+    }
+    return cmdline_putc(dst, cap, &used, '"');
+}
+
 static void usage(void) {
     printf(
         "Drive GPU Lab / G720Probe %s\n"
@@ -2145,17 +2637,21 @@ static void parse_args(probe_state *s, int argc, char **argv) {
         } else if (!strcmp(argv[i], "--control-port") && i + 1 < argc) {
             s->control_port = (unsigned)strtoul(argv[++i], NULL, 10);
         } else if (!strcmp(argv[i], "--launch") && i + 1 < argc) {
-            size_t used;
             s->launch_mode = true;
             snprintf(s->launch_exe, sizeof(s->launch_exe), "%s", argv[++i]);
-            snprintf(s->launch_cmdline, sizeof(s->launch_cmdline), "\"%s\"", s->launch_exe);
-            used = strlen(s->launch_cmdline);
-            while (i + 1 < argc && used + strlen(argv[i + 1]) + 4 < sizeof(s->launch_cmdline)) {
+            s->launch_cmdline[0] = '\0';
+            if (!cmdline_append_quoted(s->launch_cmdline, sizeof(s->launch_cmdline),
+                                       s->launch_exe)) {
+                fprintf(stderr, "Launch command line is too long.\n");
+                ExitProcess(2);
+            }
+            while (i + 1 < argc) {
                 ++i;
-                s->launch_cmdline[used++] = ' ';
-                s->launch_cmdline[used] = '\0';
-                strncat(s->launch_cmdline, argv[i], sizeof(s->launch_cmdline) - used - 1);
-                used = strlen(s->launch_cmdline);
+                if (!cmdline_append_quoted(s->launch_cmdline,
+                                           sizeof(s->launch_cmdline), argv[i])) {
+                    fprintf(stderr, "Launch command line is too long.\n");
+                    ExitProcess(2);
+                }
             }
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             usage();

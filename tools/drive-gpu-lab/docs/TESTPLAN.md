@@ -16,6 +16,8 @@ A build is not called qualified merely because it compiles.
 
 ## G720 real-device gates
 
+0. Confirm producer PID/session correlation: Vulkan events from unrelated processes must be filtered, and pre-attach device identity must be recovered without contaminating the active session.
+
 1. Probe starts in automatic mode with no game and remains stable.
 2. One game creates one stable game root; second launch reuses that root and adds only another session.
 3. `game.json`, `history.jsonl`, `latest.txt`, `manifest.json`, `modules.tsv`, `timeline.jsonl`, `MASTER.log`, raw streams and telemetry are internally consistent.
