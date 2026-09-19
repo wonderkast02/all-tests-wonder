@@ -20,6 +20,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -135,6 +136,8 @@ typedef struct probe_state {
     struct sockaddr_in host_control_addr;
     HWND hud;
     HFONT hud_font;
+    HFONT hud_font_small;
+    HFONT hud_font_title;
     bool hud_visible;
     bool deep_mode;
 
@@ -1621,9 +1624,114 @@ static void marker_capture(probe_state *s, bool screenshot) {
     }
 }
 
+#define DGL_HUD_WIDTH 590
+#define DGL_HUD_HEIGHT 438
+#define DGL_HUD_ALPHA 202
+#define DGL_HUD_KEY_COLOR RGB(1, 2, 3)
+
+static const COLORREF DGL_UI_PANEL = RGB(10, 23, 47);
+static const COLORREF DGL_UI_PANEL_2 = RGB(11, 26, 52);
+static const COLORREF DGL_UI_BORDER = RGB(55, 82, 122);
+static const COLORREF DGL_UI_TEXT = RGB(235, 241, 250);
+static const COLORREF DGL_UI_MUTED = RGB(155, 177, 210);
+static const COLORREF DGL_UI_BLUE = RGB(105, 181, 255);
+static const COLORREF DGL_UI_CYAN = RGB(55, 220, 255);
+static const COLORREF DGL_UI_GREEN = RGB(116, 242, 92);
+static const COLORREF DGL_UI_MAGENTA = RGB(236, 82, 255);
+static const COLORREF DGL_UI_YELLOW = RGB(255, 226, 63);
+static const COLORREF DGL_UI_RED = RGB(255, 82, 103);
+static const COLORREF DGL_UI_ORANGE = RGB(255, 164, 48);
+
+static void hud_round_panel(HDC dc, int left, int top, int right, int bottom,
+                            int radius, COLORREF fill, COLORREF border) {
+    HRGN region = CreateRoundRectRgn(left, top, right + 1, bottom + 1, radius, radius);
+    HBRUSH fill_brush = CreateSolidBrush(fill);
+    HBRUSH border_brush = CreateSolidBrush(border);
+    if (region && fill_brush) FillRgn(dc, region, fill_brush);
+    if (region && border_brush) FrameRgn(dc, region, border_brush, 1, 1);
+    if (fill_brush) DeleteObject(fill_brush);
+    if (border_brush) DeleteObject(border_brush);
+    if (region) DeleteObject(region);
+}
+
+static void hud_line(HDC dc, int x1, int y1, int x2, int y2, COLORREF color) {
+    HPEN pen = CreatePen(PS_SOLID, 1, color);
+    HGDIOBJ old;
+    if (!pen) return;
+    old = SelectObject(dc, pen);
+    MoveToEx(dc, x1, y1, NULL);
+    LineTo(dc, x2, y2);
+    if (old) SelectObject(dc, old);
+    DeleteObject(pen);
+}
+
+static void hud_text(HDC dc, HFONT font, COLORREF color, int x, int y, const char *value) {
+    HGDIOBJ old = NULL;
+    size_t len;
+    if (!value) return;
+    if (font) old = SelectObject(dc, font);
+    SetTextColor(dc, color);
+    len = strlen(value);
+    TextOutA(dc, x, y, value, (int)len);
+    if (old) SelectObject(dc, old);
+}
+
+static void hud_textf(HDC dc, HFONT font, COLORREF color, int x, int y,
+                      const char *fmt, ...) {
+    char buf[256];
+    va_list ap;
+    int n;
+    va_start(ap, fmt);
+    n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    buf[sizeof(buf) - 1] = '\0';
+    hud_text(dc, font, color, x, y, buf);
+}
+
+static void hud_accent_bar(HDC dc, int x, int y, COLORREF color) {
+    RECT track = {x, y, x + 76, y + 3};
+    RECT active = {x, y, x + 14, y + 3};
+    HBRUSH track_brush = CreateSolidBrush(RGB(46, 63, 91));
+    HBRUSH active_brush = CreateSolidBrush(color);
+    if (track_brush) FillRect(dc, &track, track_brush);
+    if (active_brush) FillRect(dc, &active, active_brush);
+    if (track_brush) DeleteObject(track_brush);
+    if (active_brush) DeleteObject(active_brush);
+}
+
+static void hud_draw_chip(HDC dc, int x, int y) {
+    RECT outer = {x + 4, y + 4, x + 24, y + 24};
+    RECT inner = {x + 9, y + 9, x + 19, y + 19};
+    HBRUSH b = CreateSolidBrush(DGL_UI_CYAN);
+    int i;
+    if (!b) return;
+    FrameRect(dc, &outer, b);
+    FrameRect(dc, &inner, b);
+    for (i = 0; i < 4; ++i) {
+        int p = 7 + i * 5;
+        hud_line(dc, x + p, y + 1, x + p, y + 4, DGL_UI_CYAN);
+        hud_line(dc, x + p, y + 24, x + p, y + 27, DGL_UI_CYAN);
+        hud_line(dc, x + 1, y + p, x + 4, y + p, DGL_UI_CYAN);
+        hud_line(dc, x + 24, y + p, x + 27, y + p, DGL_UI_CYAN);
+    }
+    DeleteObject(b);
+}
+
+static void hud_draw_status_dot(HDC dc, int cx, int cy, COLORREF color) {
+    HBRUSH b = CreateSolidBrush(color);
+    HGDIOBJ old;
+    if (!b) return;
+    old = SelectObject(dc, b);
+    Ellipse(dc, cx - 4, cy - 4, cx + 5, cy + 5);
+    if (old) SelectObject(dc, old);
+    DeleteObject(b);
+}
+
 static LRESULT CALLBACK hud_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     probe_state *s = g_state;
     (void)lp;
+
     if (msg == WM_HOTKEY && s) {
         if (wp == DGL_HOTKEY_TOGGLE) {
             s->hud_visible = !s->hud_visible;
@@ -1633,7 +1741,9 @@ static LRESULT CALLBACK hud_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (wp == DGL_HOTKEY_DEEP) {
             s->deep_mode = !s->deep_mode;
             if (s->session_open) {
-                master_log(s, "PROBE", s->deep_mode ? "deep capture marker enabled" : "deep capture marker disabled");
+                master_log(s, "PROBE",
+                           s->deep_mode ? "deep capture marker enabled"
+                                        : "deep capture marker disabled");
                 send_host_session_hello(s);
                 write_manifest(s, false);
             }
@@ -1642,60 +1752,181 @@ static LRESULT CALLBACK hud_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
+
+    if (msg == WM_ERASEBKGND) return 1;
+
     if (msg == WM_PAINT && s) {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(hwnd, &ps);
-        RECT r;
-        HBRUSH brush;
-        char text[8192];
+        HDC mem = CreateCompatibleDC(dc);
+        RECT client;
+        HBITMAP bmp;
+        HGDIOBJ old_bmp;
+        HBRUSH key_brush;
         const char *game = s->session_open ? s->process_name : "waiting for game";
         const char *gpu = s->gpu_name[0] ? s->gpu_name : "N/A";
         const char *driver = s->driver_name[0] ? s->driver_name : "N/A";
         const char *stack = s->graphics_stack[0] ? s->graphics_stack : "N/A";
         const char *wine = s->wine_version[0] ? s->wine_version : "N/A";
         const char *translator = s->translator[0] ? s->translator : "N/A";
-        double one_low = s->frames.p99_ms > 0 ? 1000.0 / s->frames.p99_ms : 0.0;
-        double point_low = s->frames.p999_ms > 0 ? 1000.0 / s->frames.p999_ms : 0.0;
-        GetClientRect(hwnd, &r);
-        brush = CreateSolidBrush(RGB(7, 7, 7));
-        FillRect(dc, &r, brush);
-        DeleteObject(brush);
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, RGB(235, 235, 235));
-        SelectObject(dc, s->hud_font);
-        snprintf(text, sizeof(text),
-                 "DRIVE GPU LAB  %s  %s\r\n"
-                 "GAME       %-34s PID %-8lu\r\n"
-                 "GPU        %-34s\r\n"
-                 "DRIVER     %-34s\r\n"
-                 "STACK      %-34s\r\n"
-                 "WINE       %-20s  TRANSLATOR %-18s\r\n"
-                 "FPS        %7.2f   AVG %7.2f   1%%L %7.2f   0.1%%L %7.2f\r\n"
-                 "FRAME      %7.2fms P95 %7.2f   P99 %7.2f   P99.9 %7.2f\r\n"
-                 "CPU GAME   %7.2f%%  RAM %8.1f MB\r\n"
-                 "GPU LOAD   %7.2f%%  CLOCK %8.1f MHz  TEMP %6.1f C\r\n"
-                 "VK MEM     %8.1f MB  PEAK %8.1f MB\r\n"
-                 "FRAMES     %-10llu SUBMITS %-8llu EVENTS %-10llu DROP %-6llu\r\n"
-                 "MODE       %-10s F8 HUD  F9 MARK  F10 DEEP  F11 MARK+SHOT",
-                 DGL_VERSION_STRING, s->session_open ? "REC *" : "IDLE",
-                 game, (unsigned long)s->pid, gpu, driver, stack, wine, translator,
-                 s->m.fps, s->frames.avg_fps, one_low, point_low,
-                 s->m.frame_ms, s->frames.p95_ms, s->frames.p99_ms, s->frames.p999_ms,
-                 s->m.process_cpu_pct, s->m.process_mem_mb,
-                 s->m.gpu_busy_pct, (double)s->m.gpu_freq_hz / 1000000.0,
-                 s->m.gpu_temp_mc > 0 ? (double)s->m.gpu_temp_mc / 1000.0 : 0.0,
-                 (double)s->m.vk_allocated_bytes / (1024.0 * 1024.0),
-                 (double)s->m.vk_peak_allocated_bytes / (1024.0 * 1024.0),
-                 (unsigned long long)s->m.frames_seen,
-                 (unsigned long long)s->m.submits_since_present,
-                 (unsigned long long)s->udp_events,
-                 (unsigned long long)s->udp_dropped,
+        double one_low = s->frames.p99_ms > 0.0 ? 1000.0 / s->frames.p99_ms : 0.0;
+        double point_low = s->frames.p999_ms > 0.0 ? 1000.0 / s->frames.p999_ms : 0.0;
+        double gpu_clock_mhz = (double)s->m.gpu_freq_hz / 1000000.0;
+        double gpu_temp_c =
+            s->m.gpu_temp_mc > 0 ? (double)s->m.gpu_temp_mc / 1000.0 : 0.0;
+        double vk_mem_mb = (double)s->m.vk_allocated_bytes / (1024.0 * 1024.0);
+        double vk_peak_mb =
+            (double)s->m.vk_peak_allocated_bytes / (1024.0 * 1024.0);
+
+        GetClientRect(hwnd, &client);
+        bmp = CreateCompatibleBitmap(dc, client.right - client.left,
+                                     client.bottom - client.top);
+        if (!mem || !bmp) {
+            if (bmp) DeleteObject(bmp);
+            if (mem) DeleteDC(mem);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+
+        old_bmp = SelectObject(mem, bmp);
+        key_brush = CreateSolidBrush(DGL_HUD_KEY_COLOR);
+        if (key_brush) {
+            FillRect(mem, &client, key_brush);
+            DeleteObject(key_brush);
+        }
+        SetBkMode(mem, TRANSPARENT);
+
+        hud_round_panel(mem, 0, 0, 586, 44, 16, DGL_UI_PANEL_2, DGL_UI_BORDER);
+        hud_draw_chip(mem, 12, 8);
+        hud_text(mem, s->hud_font_title, DGL_UI_TEXT, 50, 12, "Drive GPU Lab");
+        hud_textf(mem, s->hud_font_small, DGL_UI_MUTED, 198, 15, "%s",
+                  DGL_VERSION_STRING);
+        if (s->session_open) {
+            hud_text(mem, s->hud_font, DGL_UI_RED, 366, 13, "REC");
+            hud_draw_status_dot(mem, 414, 22, DGL_UI_RED);
+        } else {
+            hud_text(mem, s->hud_font, DGL_UI_MUTED, 366, 13, "IDLE");
+        }
+        hud_line(mem, 516, 22, 531, 22, DGL_UI_TEXT);
+        hud_line(mem, 556, 15, 568, 27, DGL_UI_TEXT);
+        hud_line(mem, 568, 15, 556, 27, DGL_UI_TEXT);
+
+        hud_round_panel(mem, 0, 52, 586, 178, 15, DGL_UI_PANEL, DGL_UI_BORDER);
+        hud_line(mem, 306, 66, 306, 164, RGB(58, 80, 114));
+
+        hud_text(mem, s->hud_font, DGL_UI_YELLOW, 20, 65, "GAME");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 112, 65, "%.22s", game);
+        hud_text(mem, s->hud_font, DGL_UI_MAGENTA, 20, 87, "GPU");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 112, 87, "%.22s", gpu);
+        hud_text(mem, s->hud_font, DGL_UI_CYAN, 20, 109, "DRIVER");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 112, 109, "%.22s", driver);
+        hud_text(mem, s->hud_font, DGL_UI_CYAN, 20, 131, "STACK");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 112, 131, "%.22s", stack);
+        hud_text(mem, s->hud_font, DGL_UI_BLUE, 20, 153, "WINE");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 112, 153, "%.18s", wine);
+
+        hud_text(mem, s->hud_font, DGL_UI_CYAN, 332, 67, "PID");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 390, 67, "%lu",
+                  (unsigned long)s->pid);
+        hud_text(mem, s->hud_font, DGL_UI_GREEN, 332, 111, "TRANSLATOR");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 451, 111, "%.13s", translator);
+
+        hud_round_panel(mem, 0, 186, 586, 352, 15, DGL_UI_PANEL, DGL_UI_BORDER);
+
+        hud_text(mem, s->hud_font, DGL_UI_GREEN, 20, 199, "FPS");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 76, 199, "%.2f", s->m.fps);
+        hud_accent_bar(mem, 20, 223, DGL_UI_GREEN);
+
+        hud_text(mem, s->hud_font, DGL_UI_BLUE, 156, 199, "AVG");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 209, 199, "%.2f",
+                  s->frames.avg_fps);
+        hud_accent_bar(mem, 156, 223, DGL_UI_ORANGE);
+
+        hud_text(mem, s->hud_font, DGL_UI_BLUE, 292, 199, "1%L");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 345, 199, "%.2f", one_low);
+        hud_accent_bar(mem, 292, 223, DGL_UI_BLUE);
+
+        hud_text(mem, s->hud_font, DGL_UI_BLUE, 428, 199, "0.1%L");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 494, 199, "%.2f", point_low);
+        hud_accent_bar(mem, 428, 223, DGL_UI_CYAN);
+
+        hud_line(mem, 142, 198, 142, 261, RGB(54, 75, 108));
+        hud_line(mem, 278, 198, 278, 261, RGB(54, 75, 108));
+        hud_line(mem, 414, 198, 414, 261, RGB(54, 75, 108));
+
+        hud_text(mem, s->hud_font, DGL_UI_CYAN, 20, 234, "FRAME");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 76, 234, "%.2fms",
+                  s->m.frame_ms);
+        hud_text(mem, s->hud_font, DGL_UI_BLUE, 156, 234, "P95");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 209, 234, "%.2f",
+                  s->frames.p95_ms);
+        hud_text(mem, s->hud_font, DGL_UI_BLUE, 292, 234, "P99");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 345, 234, "%.2f",
+                  s->frames.p99_ms);
+        hud_text(mem, s->hud_font, DGL_UI_BLUE, 428, 234, "P99.9");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 494, 234, "%.2f",
+                  s->frames.p999_ms);
+
+        hud_text(mem, s->hud_font, DGL_UI_BLUE, 20, 276, "CPU GAME");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 111, 276, "%.2f%%",
+                  s->m.process_cpu_pct);
+        hud_line(mem, 219, 274, 219, 336, RGB(54, 75, 108));
+        hud_text(mem, s->hud_font, DGL_UI_BLUE, 239, 276, "RAM");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 288, 276, "%.1f MB",
+                  s->m.process_mem_mb);
+
+        hud_text(mem, s->hud_font, DGL_UI_MAGENTA, 20, 300, "GPU LOAD");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 111, 300, "%.2f%%",
+                  s->m.gpu_busy_pct);
+        hud_text(mem, s->hud_font, DGL_UI_BLUE, 239, 300, "CLOCK");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 304, 300, "%.1f MHz",
+                  gpu_clock_mhz);
+        hud_text(mem, s->hud_font, DGL_UI_CYAN, 424, 300, "TEMP");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 474, 300, "%.1f C", gpu_temp_c);
+
+        hud_text(mem, s->hud_font, DGL_UI_YELLOW, 20, 324, "VK MEM");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 111, 324, "%.1f MB", vk_mem_mb);
+        hud_text(mem, s->hud_font, DGL_UI_BLUE, 239, 324, "PEAK");
+        hud_textf(mem, s->hud_font, DGL_UI_TEXT, 304, 324, "%.1f MB", vk_peak_mb);
+
+        hud_round_panel(mem, 0, 360, 586, 434, 15, DGL_UI_PANEL, DGL_UI_BORDER);
+        hud_text(mem, s->hud_font_small, DGL_UI_BLUE, 20, 372, "FRAMES");
+        hud_textf(mem, s->hud_font_small, DGL_UI_TEXT, 77, 372, "%llu",
+                  (unsigned long long)s->m.frames_seen);
+        hud_text(mem, s->hud_font_small, DGL_UI_BLUE, 150, 372, "SUBMITS");
+        hud_textf(mem, s->hud_font_small, DGL_UI_TEXT, 215, 372, "%llu",
+                  (unsigned long long)s->m.submits_since_present);
+        hud_text(mem, s->hud_font_small, DGL_UI_BLUE, 291, 372, "EVENTS");
+        hud_textf(mem, s->hud_font_small, DGL_UI_TEXT, 349, 372, "%llu",
+                  (unsigned long long)s->udp_events);
+        hud_text(mem, s->hud_font_small, DGL_UI_BLUE, 430, 372, "DROP");
+        hud_textf(mem, s->hud_font_small, DGL_UI_TEXT, 476, 372, "%llu",
+                  (unsigned long long)s->udp_dropped);
+
+        hud_line(mem, 18, 397, 568, 397, RGB(54, 75, 108));
+
+        hud_text(mem, s->hud_font_small, DGL_UI_BLUE, 20, 407, "MODE");
+        hud_text(mem, s->hud_font_small, DGL_UI_TEXT, 61, 407,
                  s->deep_mode ? "DEEP" : "NORMAL");
-        r.left += 12; r.top += 10;
-        DrawTextA(dc, text, -1, &r, DT_LEFT | DT_TOP | DT_NOPREFIX);
+        hud_text(mem, s->hud_font_small, DGL_UI_CYAN, 145, 407, "F8");
+        hud_text(mem, s->hud_font_small, DGL_UI_MUTED, 169, 407, "HUD");
+        hud_text(mem, s->hud_font_small, DGL_UI_CYAN, 214, 407, "F9");
+        hud_text(mem, s->hud_font_small, DGL_UI_MUTED, 238, 407, "MARK");
+        hud_text(mem, s->hud_font_small, DGL_UI_CYAN, 291, 407, "F10");
+        hud_text(mem, s->hud_font_small, DGL_UI_MUTED, 321, 407, "DEEP");
+        hud_text(mem, s->hud_font_small, DGL_UI_CYAN, 369, 407, "F11");
+        hud_text(mem, s->hud_font_small, DGL_UI_MUTED, 399, 407, "MARK+SHOT");
+
+        BitBlt(dc, 0, 0, client.right - client.left, client.bottom - client.top,
+               mem, 0, 0, SRCCOPY);
+
+        if (old_bmp) SelectObject(mem, old_bmp);
+        DeleteObject(bmp);
+        DeleteDC(mem);
         EndPaint(hwnd, &ps);
         return 0;
     }
+
     if (msg == WM_DESTROY) {
         PostQuitMessage(0);
         return 0;
@@ -1706,26 +1937,70 @@ static LRESULT CALLBACK hud_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 static int create_hud(probe_state *s) {
     WNDCLASSEXA wc;
     HINSTANCE inst = GetModuleHandleA(NULL);
+    DWORD ex_style =
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT |
+        WS_EX_NOACTIVATE;
+
     memset(&wc, 0, sizeof(wc));
     wc.cbSize = (UINT)sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = hud_proc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = NULL;
     wc.lpszClassName = DGL_HUD_CLASS;
-    if (!RegisterClassExA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return -1;
-    s->hud = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT,
-                             DGL_HUD_CLASS, "Drive GPU Lab", WS_POPUP,
-                             18, 18, 960, 320, NULL, NULL, inst, NULL);
+
+    if (!RegisterClassExA(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        return -1;
+
+    s->hud = CreateWindowExA(ex_style, DGL_HUD_CLASS, "Drive GPU Lab", WS_POPUP,
+                             18, 18, DGL_HUD_WIDTH, DGL_HUD_HEIGHT,
+                             NULL, NULL, inst, NULL);
     if (!s->hud) return -1;
-    SetLayeredWindowAttributes(s->hud, 0, 220, LWA_ALPHA);
-    s->hud_font = CreateFontA(-17, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                              CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
-    if (!s->hud_font) return -1;
+
+    if (!SetLayeredWindowAttributes(s->hud, DGL_HUD_KEY_COLOR, DGL_HUD_ALPHA,
+                                    LWA_ALPHA | LWA_COLORKEY)) {
+        DestroyWindow(s->hud);
+        s->hud = NULL;
+        return -1;
+    }
+
+    s->hud_font = CreateFontA(
+        -15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+        DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+    s->hud_font_small = CreateFontA(
+        -13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+        DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+    s->hud_font_title = CreateFontA(
+        -18, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+        DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+
+    if (!s->hud_font || !s->hud_font_small || !s->hud_font_title) {
+        if (s->hud_font) {
+            DeleteObject(s->hud_font);
+            s->hud_font = NULL;
+        }
+        if (s->hud_font_small) {
+            DeleteObject(s->hud_font_small);
+            s->hud_font_small = NULL;
+        }
+        if (s->hud_font_title) {
+            DeleteObject(s->hud_font_title);
+            s->hud_font_title = NULL;
+        }
+        DestroyWindow(s->hud);
+        s->hud = NULL;
+        return -1;
+    }
+
     RegisterHotKey(s->hud, DGL_HOTKEY_TOGGLE, 0, VK_F8);
     RegisterHotKey(s->hud, DGL_HOTKEY_MARK, 0, VK_F9);
     RegisterHotKey(s->hud, DGL_HOTKEY_DEEP, 0, VK_F10);
     RegisterHotKey(s->hud, DGL_HOTKEY_SHOT, 0, VK_F11);
+
     s->hud_visible = true;
     ShowWindow(s->hud, SW_SHOWNOACTIVATE);
     UpdateWindow(s->hud);
@@ -1776,6 +2051,8 @@ static void close_network_hud(probe_state *s) {
         s->hud = NULL;
     }
     if (s->hud_font) { DeleteObject(s->hud_font); s->hud_font = NULL; }
+    if (s->hud_font_small) { DeleteObject(s->hud_font_small); s->hud_font_small = NULL; }
+    if (s->hud_font_title) { DeleteObject(s->hud_font_title); s->hud_font_title = NULL; }
     WSACleanup();
 }
 
