@@ -35,6 +35,13 @@ endfunction()
 
 dgl_strict(dgl_common)
 
+if(MSVC)
+  # fopen/snprintf-style ISO C interfaces are intentionally used for portable
+  # Wine/Win32 code. Keep /W4 /WX for all real diagnostics while disabling only
+  # Microsoft's non-standard CRT deprecation diagnostic.
+  target_compile_definitions(dgl_common PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 if(WIN32)
   include(FetchContent)
   FetchContent_Declare(
@@ -64,8 +71,16 @@ if(WIN32)
     shell32
   )
   dgl_strict(G720Probe)
+  if(MSVC)
+    target_compile_definitions(G720Probe PRIVATE _CRT_SECURE_NO_WARNINGS)
+  endif()
 
-  add_library(G720VkLayer SHARED layer/vk_layer_drive.c)
+  if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(DGL_LAYER_DEF ${CMAKE_CURRENT_SOURCE_DIR}/layer/G720VkLayer-x64.def)
+  else()
+    set(DGL_LAYER_DEF ${CMAKE_CURRENT_SOURCE_DIR}/layer/G720VkLayer-x86.def)
+  endif()
+  add_library(G720VkLayer SHARED layer/vk_layer_drive.c ${DGL_LAYER_DEF})
   target_include_directories(G720VkLayer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${vulkanheaders_SOURCE_DIR}/include

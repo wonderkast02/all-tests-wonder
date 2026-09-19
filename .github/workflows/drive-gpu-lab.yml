@@ -2,6 +2,8 @@ name: Drive GPU Lab
 
 on:
   push:
+    branches:
+      - main
     paths:
       - 'tools/drive-gpu-lab/**'
       - '.github/workflows/drive-gpu-lab.yml'
@@ -21,9 +23,9 @@ concurrency:
 jobs:
   quality:
     name: Source quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Repository hygiene
         shell: bash
         run: |
@@ -36,19 +38,34 @@ jobs:
           required = [
               root/'README.md', root/'LICENSE', root/'CHANGELOG.md', root/'CMakeLists.txt',
               root/'src/probe_win32.c', root/'src/hostd_posix.c',
-              root/'layer/vk_layer_drive.c', root/'include/dgl_protocol.h'
+              root/'layer/vk_layer_drive.c', root/'layer/G720VkLayer-x64.def',
+              root/'layer/G720VkLayer-x86.def', root/'include/dgl_protocol.h'
           ]
           for p in required:
               if not p.is_file():
                   raise SystemExit(f'missing required file: {p}')
-          print('source tree: PASS')
+          import json
+          manifest = json.loads((root/'layer/VK_LAYER_DRIVE_G720_telemetry.json.in').read_text(encoding='utf-8'))
+          layer = manifest['layer']
+          assert layer['library_path'] == 'G720VkLayer.dll'
+          functions = layer['functions']
+          assert functions['vkNegotiateLoaderLayerInterfaceVersion'] == 'dgl_vkNegotiateLoaderLayerInterfaceVersion'
+          assert functions['vkGetInstanceProcAddr'] == 'dgl_layerGetInstanceProcAddr'
+          assert functions['vkGetDeviceProcAddr'] == 'dgl_layerGetDeviceProcAddr'
+          for p in [root/'src/dgl_ring.c', root/'src/common.c', root/'src/sha256.c',
+                    root/'src/hostd_posix.c', root/'src/probe_win32.c', root/'layer/vk_layer_drive.c',
+                    root/'include/dgl_protocol.h', root/'include/dgl_ring.h']:
+              first = p.read_text(encoding='utf-8').splitlines()[0]
+              if 'SPDX-License-Identifier:' not in first:
+                  raise SystemExit(f'missing SPDX header: {p}')
+          print('source tree + manifest + SPDX: PASS')
           PY
 
   linux:
     name: Linux hostd + tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure
         run: cmake -S tools/drive-gpu-lab -B build/dgl-linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DDGL_WARNINGS_AS_ERRORS=ON
       - name: Build
@@ -80,7 +97,7 @@ jobs:
           cp tools/drive-gpu-lab/{README.md,VERSION,LICENSE,CHANGELOG.md} "$D/"
           (cd "$D" && sha256sum g720-hostd README.md VERSION LICENSE CHANGELOG.md > SHA256SUMS.txt)
           tar -C dist -czf dist/drive-gpu-lab-linux-x86_64.tar.gz drive-gpu-lab-linux-x86_64
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: drive-gpu-lab-linux-x86_64
           path: dist/drive-gpu-lab-linux-x86_64.tar.gz
@@ -89,12 +106,23 @@ jobs:
 
   android:
     name: Android arm64 hostd
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_HOME:-}"
+          test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
       - name: Install pinned NDK
-        run: yes | sdkmanager 'ndk;28.2.13676358'
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install 'ndk;28.2.13676358'
+          test -f "$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake"
       - name: Configure arm64-v8a
         shell: bash
         run: |
@@ -108,6 +136,14 @@ jobs:
             -DDGL_WARNINGS_AS_ERRORS=ON
       - name: Build
         run: cmake --build build/dgl-android --target g720-hostd --parallel
+      - name: Verify Android ELF
+        shell: bash
+        run: |
+          set -euo pipefail
+          READELF="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          test -x "$READELF"
+          "$READELF" -h build/dgl-android/g720-hostd | tee build/dgl-android/readelf.txt
+          grep -Eq 'Machine:[[:space:]]+AArch64' build/dgl-android/readelf.txt
       - name: Package
         shell: bash
         run: |
@@ -118,7 +154,7 @@ jobs:
           cp tools/drive-gpu-lab/{README.md,VERSION,LICENSE,CHANGELOG.md} "$D/"
           (cd "$D" && sha256sum g720-hostd README.md VERSION LICENSE CHANGELOG.md > SHA256SUMS.txt)
           (cd dist && zip -9 -r drive-gpu-lab-android-arm64.zip drive-gpu-lab-android-arm64)
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: drive-gpu-lab-android-arm64
           path: dist/drive-gpu-lab-android-arm64.zip
@@ -127,7 +163,7 @@ jobs:
 
   windows:
     name: Windows ${{ matrix.arch }} probe + Vulkan layer
-    runs-on: windows-latest
+    runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
@@ -137,7 +173,7 @@ jobs:
           - arch: x86
             cmake_arch: Win32
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure
         shell: pwsh
         run: cmake -S tools/drive-gpu-lab -B build/dgl-windows-${{ matrix.arch }} -A ${{ matrix.cmake_arch }} -DDGL_WARNINGS_AS_ERRORS=ON
@@ -147,7 +183,7 @@ jobs:
       - name: Unit tests
         shell: pwsh
         run: ctest --test-dir build/dgl-windows-${{ matrix.arch }} -C Release --output-on-failure
-      - name: Verify PE outputs
+      - name: Verify PE outputs and layer ABI
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -155,6 +191,25 @@ jobs:
           foreach ($f in @('G720Probe.exe','G720VkLayer.dll','VK_LAYER_DRIVE_G720_telemetry.json')) {
             if (-not (Test-Path "$root/$f")) { throw "missing $root/$f" }
           }
+          $manifest = Get-Content "$root/VK_LAYER_DRIVE_G720_telemetry.json" -Raw | ConvertFrom-Json
+          if ($manifest.layer.library_path -ne 'G720VkLayer.dll') { throw 'unexpected Vulkan layer library_path' }
+          $expected = @{
+            vkNegotiateLoaderLayerInterfaceVersion = 'dgl_vkNegotiateLoaderLayerInterfaceVersion'
+            vkGetInstanceProcAddr = 'dgl_layerGetInstanceProcAddr'
+            vkGetDeviceProcAddr = 'dgl_layerGetDeviceProcAddr'
+          }
+          foreach ($key in $expected.Keys) {
+            if ($manifest.layer.functions.$key -ne $expected[$key]) { throw "manifest function mismatch: $key" }
+          }
+          $exports = (& dumpbin /nologo /exports "$root/G720VkLayer.dll") -join "`n"
+          foreach ($symbol in $expected.Values) {
+            if ($exports -notmatch "(?m)^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+$([regex]::Escape($symbol))\s*$") {
+              throw "missing exact layer export: $symbol"
+            }
+          }
+          $headers = (& dumpbin /nologo /headers "$root/G720VkLayer.dll") -join "`n"
+          if ('${{ matrix.arch }}' -eq 'x64' -and $headers -notmatch '(?im)machine \(x64\)') { throw 'DLL is not x64' }
+          if ('${{ matrix.arch }}' -eq 'x86' -and $headers -notmatch '(?im)machine \(x86\)') { throw 'DLL is not x86' }
       - name: Package
         shell: pwsh
         run: |
@@ -176,7 +231,7 @@ jobs:
             "$($h.Hash.ToLower())  $($_.Name)"
           } | Set-Content "$d/SHA256SUMS.txt"
           Compress-Archive -Path "$d/*" -DestinationPath 'dist/drive-gpu-lab-windows-${{ matrix.arch }}.zip' -CompressionLevel Optimal
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: drive-gpu-lab-windows-${{ matrix.arch }}
           path: dist/drive-gpu-lab-windows-${{ matrix.arch }}.zip

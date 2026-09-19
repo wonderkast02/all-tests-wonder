@@ -4,11 +4,13 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 
+#define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
 
 #include "dgl_protocol.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -331,9 +333,9 @@ VKAPI_ATTR VkResult VKAPI_CALL dgl_vkAllocateMemory(VkDevice device, const VkMem
 VKAPI_ATTR void VKAPI_CALL dgl_vkFreeMemory(VkDevice device, VkDeviceMemory memory,
                                              const VkAllocationCallbacks *pAllocator);
 
-__declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char *pName);
-__declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char *pName);
-__declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_layerGetPhysicalDeviceProcAddr(VkInstance instance, const char *pName);
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL dgl_layerGetInstanceProcAddr(VkInstance instance, const char *pName);
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL dgl_layerGetDeviceProcAddr(VkDevice device, const char *pName);
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL dgl_layerGetPhysicalDeviceProcAddr(VkInstance instance, const char *pName);
 
 VKAPI_ATTR VkResult VKAPI_CALL dgl_vkCreateInstance(const VkInstanceCreateInfo *pCreateInfo,
                                                      const VkAllocationCallbacks *pAllocator,
@@ -617,11 +619,11 @@ VKAPI_ATTR void VKAPI_CALL dgl_vkFreeMemory(VkDevice device, VkDeviceMemory memo
     ctx->free_memory(device, memory, pAllocator);
 }
 
-__declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char *pName) {
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL dgl_layerGetInstanceProcAddr(VkInstance instance, const char *pName) {
     instance_ctx *ctx;
     if (!pName) return NULL;
-    if (!strcmp(pName, "vkGetInstanceProcAddr")) return (PFN_vkVoidFunction)vkGetInstanceProcAddr;
-    if (!strcmp(pName, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
+    if (!strcmp(pName, "vkGetInstanceProcAddr")) return (PFN_vkVoidFunction)dgl_layerGetInstanceProcAddr;
+    if (!strcmp(pName, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)dgl_layerGetDeviceProcAddr;
     if (!strcmp(pName, "vkCreateInstance")) return (PFN_vkVoidFunction)dgl_vkCreateInstance;
     if (!strcmp(pName, "vkDestroyInstance")) return (PFN_vkVoidFunction)dgl_vkDestroyInstance;
     if (!strcmp(pName, "vkEnumeratePhysicalDevices")) return (PFN_vkVoidFunction)dgl_vkEnumeratePhysicalDevices;
@@ -632,10 +634,10 @@ __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProc
     return NULL;
 }
 
-__declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char *pName) {
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL dgl_layerGetDeviceProcAddr(VkDevice device, const char *pName) {
     device_ctx *ctx;
     if (!pName) return NULL;
-    if (!strcmp(pName, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
+    if (!strcmp(pName, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)dgl_layerGetDeviceProcAddr;
     if (!strcmp(pName, "vkDestroyDevice")) return (PFN_vkVoidFunction)dgl_vkDestroyDevice;
     if (!strcmp(pName, "vkGetDeviceQueue")) return (PFN_vkVoidFunction)dgl_vkGetDeviceQueue;
     if (!strcmp(pName, "vkGetDeviceQueue2")) return (PFN_vkVoidFunction)dgl_vkGetDeviceQueue2;
@@ -652,20 +654,20 @@ __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAd
     return NULL;
 }
 
-__declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_layerGetPhysicalDeviceProcAddr(VkInstance instance, const char *pName) {
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL dgl_layerGetPhysicalDeviceProcAddr(VkInstance instance, const char *pName) {
     instance_ctx *ctx = instance ? find_instance(instance) : NULL;
     if (ctx && ctx->next_gpdpa) return ctx->next_gpdpa(instance, pName);
     if (g_fallback_gpdpa) return g_fallback_gpdpa(instance, pName);
     return NULL;
 }
 
-__declspec(dllexport) VKAPI_ATTR VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface *pVersionStruct) {
+VKAPI_ATTR VkResult VKAPI_CALL dgl_vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface *pVersionStruct) {
     if (!pVersionStruct || pVersionStruct->sType != LAYER_NEGOTIATE_INTERFACE_STRUCT) return VK_ERROR_INITIALIZATION_FAILED;
     if (pVersionStruct->loaderLayerInterfaceVersion < 2) return VK_ERROR_INITIALIZATION_FAILED;
     pVersionStruct->loaderLayerInterfaceVersion = 2;
-    pVersionStruct->pfnGetInstanceProcAddr = vkGetInstanceProcAddr;
-    pVersionStruct->pfnGetDeviceProcAddr = vkGetDeviceProcAddr;
-    pVersionStruct->pfnGetPhysicalDeviceProcAddr = vk_layerGetPhysicalDeviceProcAddr;
+    pVersionStruct->pfnGetInstanceProcAddr = dgl_layerGetInstanceProcAddr;
+    pVersionStruct->pfnGetDeviceProcAddr = dgl_layerGetDeviceProcAddr;
+    pVersionStruct->pfnGetPhysicalDeviceProcAddr = dgl_layerGetPhysicalDeviceProcAddr;
     return VK_SUCCESS;
 }
 

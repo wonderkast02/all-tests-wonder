@@ -6,6 +6,11 @@
     "library_path": "G720VkLayer.dll",
     "api_version": "1.3.0",
     "implementation_version": "1",
-    "description": "Drive GPU Lab low-overhead Vulkan frame and submission telemetry layer"
+    "description": "Drive GPU Lab low-overhead Vulkan frame and submission telemetry layer",
+    "functions": {
+      "vkNegotiateLoaderLayerInterfaceVersion": "dgl_vkNegotiateLoaderLayerInterfaceVersion",
+      "vkGetInstanceProcAddr": "dgl_layerGetInstanceProcAddr",
+      "vkGetDeviceProcAddr": "dgl_layerGetDeviceProcAddr"
+    }
   }
 }
