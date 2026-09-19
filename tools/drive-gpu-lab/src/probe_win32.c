@@ -546,20 +546,20 @@ static BOOL CALLBACK score_window_proc(HWND hwnd, LPARAM param) {
 
 static DWORD find_process_by_name(const char *name) {
     HANDLE snap;
-    PROCESSENTRY32A pe;
+    PROCESSENTRY32 pe;
     DWORD pid = 0;
     if (!name || !name[0]) return 0;
     snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return 0;
     memset(&pe, 0, sizeof(pe));
     pe.dwSize = (DWORD)sizeof(pe);
-    if (Process32FirstA(snap, &pe)) {
+    if (Process32First(snap, &pe)) {
         do {
             if (_stricmp(pe.szExeFile, name) == 0) {
                 pid = pe.th32ProcessID;
                 break;
             }
-        } while (Process32NextA(snap, &pe));
+        } while (Process32Next(snap, &pe));
     }
     CloseHandle(snap);
     return pid;
@@ -567,7 +567,7 @@ static DWORD find_process_by_name(const char *name) {
 
 static DWORD find_auto_game(char *name, size_t name_cap, char *path, size_t path_cap) {
     HANDLE snap;
-    PROCESSENTRY32A pe;
+    PROCESSENTRY32 pe;
     DWORD best_pid = 0;
     uint64_t best_score = 0;
     DWORD self = GetCurrentProcessId();
@@ -575,7 +575,7 @@ static DWORD find_auto_game(char *name, size_t name_cap, char *path, size_t path
     if (snap == INVALID_HANDLE_VALUE) return 0;
     memset(&pe, 0, sizeof(pe));
     pe.dwSize = (DWORD)sizeof(pe);
-    if (Process32FirstA(snap, &pe)) {
+    if (Process32First(snap, &pe)) {
         do {
             char image[DGL_PATH_CAP];
             HANDLE h;
@@ -604,7 +604,7 @@ static DWORD find_auto_game(char *name, size_t name_cap, char *path, size_t path
                 snprintf(name, name_cap, "%s", pe.szExeFile);
                 snprintf(path, path_cap, "%s", image);
             }
-        } while (Process32NextA(snap, &pe));
+        } while (Process32Next(snap, &pe));
     }
     CloseHandle(snap);
     return best_pid;
@@ -762,7 +762,7 @@ static void update_stack_summary(probe_state *s, bool seen_dxvk, bool seen_vkd3d
 
 static void scan_modules(probe_state *s) {
     HANDLE snap;
-    MODULEENTRY32A me;
+    MODULEENTRY32 me;
     char out_path[DGL_PATH_CAP];
     FILE *f;
     bool seen_dxvk = false, seen_vkd3d = false, seen_winevulkan = false, seen_vulkan = false;
@@ -779,7 +779,7 @@ static void scan_modules(probe_state *s) {
     }
     memset(&me, 0, sizeof(me));
     me.dwSize = (DWORD)sizeof(me);
-    if (Module32FirstA(snap, &me)) {
+    if (Module32First(snap, &me)) {
         do {
             char hash[65] = "";
             char identity[DGL_TEXT_CAP] = "";
@@ -832,7 +832,7 @@ static void scan_modules(probe_state *s) {
                     module_identity.product_version[0] ? module_identity.product_version : "",
                     module_identity.file_version[0] ? module_identity.file_version : "",
                     identity[0] ? identity : "not-embedded");
-        } while (Module32NextA(snap, &me));
+        } while (Module32Next(snap, &me));
     }
     CloseHandle(snap);
     fclose(f);

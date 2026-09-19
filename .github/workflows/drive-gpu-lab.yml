@@ -58,6 +58,16 @@ jobs:
               first = p.read_text(encoding='utf-8').splitlines()[0]
               if 'SPDX-License-Identifier:' not in first:
                   raise SystemExit(f'missing SPDX header: {p}')
+          legacy_toolhelp_tokens = [
+              'PROCESSENTRY32A', 'MODULEENTRY32A',
+              'Process32FirstA', 'Process32NextA',
+              'Module32FirstA', 'Module32NextA',
+          ]
+          probe_text = (root/'src/probe_win32.c').read_text(encoding='utf-8')
+          for token in legacy_toolhelp_tokens:
+              if token in probe_text:
+                  raise SystemExit(f'unsupported Tool Help ANSI suffix remains: {token}')
+          print('Tool Help API naming: PASS')
           print('source tree + manifest + SPDX: PASS')
           PY
 

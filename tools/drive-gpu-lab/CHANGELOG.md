@@ -30,3 +30,4 @@ Before the first public dev.1 prerelease, CI qualification was hardened to:
 - pin hosted runner families and Node 24-based GitHub Actions by immutable commit SHA;
 - use the runner-provided Android SDK directly and install the pinned NDK without the deprecated `tools` package path;
 - harden Win32 size conversions under `/W4 /WX` and make per-run session IDs collision-resistant while keeping the per-game root stable.
+- correct Tool Help process/module enumeration to the SDK's unsuffixed ANSI entry points used by `PROCESSENTRY32` and `MODULEENTRY32`.
