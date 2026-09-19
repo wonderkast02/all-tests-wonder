@@ -33,3 +33,4 @@ Before the first public dev.1 prerelease, CI qualification was hardened to:
 - correct Tool Help process/module enumeration to the SDK's unsuffixed ANSI entry points used by `PROCESSENTRY32` and `MODULEENTRY32`.
 - resolve MSVC `dumpbin.exe` through Visual Studio `vswhere` in Windows CI instead of assuming it is present in the default PowerShell `PATH`.
 - redesenha o HUD Win32 em cartões compactos semitransparentes, com hierarquia visual, cores por métrica e fundo click-through para preservar a visibilidade do jogo.
+- separa o HUD Glass em duas camadas: cartões a 55% de opacidade e texto/bordas a 100%, mantendo os espaços entre cartões totalmente transparentes.
