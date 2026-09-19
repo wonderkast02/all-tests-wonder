@@ -211,13 +211,23 @@ jobs:
           foreach ($key in $expected.Keys) {
             if ($manifest.layer.functions.$key -ne $expected[$key]) { throw "manifest function mismatch: $key" }
           }
-          $exports = (& dumpbin /nologo /exports "$root/G720VkLayer.dll") -join "`n"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found: $vswhere" }
+          $vsInstall = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+          if (-not $vsInstall) { throw 'Visual Studio VC tools installation not found' }
+          $dumpbin = Get-ChildItem -Path "$vsInstall\VC\Tools\MSVC" -Filter dumpbin.exe -File -Recurse |
+            Where-Object { $_.FullName -match '\\bin\\Hostx64\\x64\\dumpbin\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $dumpbin) { throw "dumpbin.exe not found under $vsInstall" }
+          Write-Host "dumpbin=$dumpbin"
+          $exports = (& $dumpbin /nologo /exports "$root/G720VkLayer.dll") -join "`n"
           foreach ($symbol in $expected.Values) {
             if ($exports -notmatch "(?m)^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+$([regex]::Escape($symbol))\s*$") {
               throw "missing exact layer export: $symbol"
             }
           }
-          $headers = (& dumpbin /nologo /headers "$root/G720VkLayer.dll") -join "`n"
+          $headers = (& $dumpbin /nologo /headers "$root/G720VkLayer.dll") -join "`n"
           if ('${{ matrix.arch }}' -eq 'x64' -and $headers -notmatch '(?im)machine \(x64\)') { throw 'DLL is not x64' }
           if ('${{ matrix.arch }}' -eq 'x86' -and $headers -notmatch '(?im)machine \(x86\)') { throw 'DLL is not x86' }
       - name: Package
