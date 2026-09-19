@@ -704,6 +704,7 @@ static bool ignored_process_name(const char *name) {
         "explorer.exe", "services.exe", "winedevice.exe", "plugplay.exe", "rpcss.exe",
         "svchost.exe", "winemenubuilder.exe", "wineboot.exe", "start.exe", "cmd.exe",
         "conhost.exe", "rundll32.exe", "regedit.exe", "taskmgr.exe", "msiexec.exe",
+        "wfm.exe", "winefile.exe",
         "G720Probe.exe", "G720Probe-x64.exe", "G720Probe-x86.exe", NULL
     };
     int i;
@@ -755,48 +756,54 @@ static DWORD find_process_by_name(const char *name) {
     return pid;
 }
 
-static DWORD find_auto_game(char *name, size_t name_cap, char *path, size_t path_cap) {
-    HANDLE snap;
-    PROCESSENTRY32 pe;
+static DWORD find_auto_game(probe_state *s, char *name, size_t name_cap,
+                            char *path, size_t path_cap) {
+    size_t i;
     DWORD best_pid = 0;
-    uint64_t best_score = 0;
-    DWORD self = GetCurrentProcessId();
-    snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return 0;
-    memset(&pe, 0, sizeof(pe));
-    pe.dwSize = (DWORD)sizeof(pe);
-    if (Process32First(snap, &pe)) {
-        do {
-            char image[DGL_PATH_CAP];
-            HANDLE h;
-            PROCESS_MEMORY_COUNTERS_EX pmc;
-            window_score_ctx wc;
-            uint64_t score;
-            if (pe.th32ProcessID == 0 || pe.th32ProcessID == self || ignored_process_name(pe.szExeFile)) continue;
-            if (!process_image_path(pe.th32ProcessID, image, sizeof(image))) continue;
-            h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pe.th32ProcessID);
-            if (!h) continue;
-            memset(&pmc, 0, sizeof(pmc));
-            pmc.cb = (DWORD)sizeof(pmc);
-            if (!GetProcessMemoryInfo(h, (PROCESS_MEMORY_COUNTERS *)&pmc, (DWORD)sizeof(pmc))) {
-                CloseHandle(h);
-                continue;
-            }
-            CloseHandle(h);
-            memset(&wc, 0, sizeof(wc));
-            wc.pid = pe.th32ProcessID;
-            EnumWindows(score_window_proc, (LPARAM)&wc);
-            if (!wc.area) continue;
-            score = wc.area / 1024ull + (uint64_t)pmc.WorkingSetSize / (1024ull * 1024ull);
-            if (score > best_score) {
-                best_score = score;
-                best_pid = pe.th32ProcessID;
-                snprintf(name, name_cap, "%s", pe.szExeFile);
-                snprintf(path, path_cap, "%s", image);
-            }
-        } while (Process32Next(snap, &pe));
+    uint64_t best_area = 0;
+    uint64_t best_rx = 0;
+    uint64_t now = qpc_ns();
+    if (!s) return 0;
+
+    for (i = 0; i < DGL_PENDING_DEVICE_SLOTS; ++i) {
+        pending_device_event *e = &s->pending_device[i];
+        char image[DGL_PATH_CAP];
+        const char *candidate;
+        window_score_ctx wc;
+
+        if (!e->pid) continue;
+        if (now < e->rx_qpc_ns ||
+            now - e->rx_qpc_ns > DGL_PENDING_DEVICE_TTL_NS) {
+            memset(e, 0, sizeof(*e));
+            continue;
+        }
+
+        if (!process_image_path(e->pid, image, sizeof(image))) {
+            memset(e, 0, sizeof(*e));
+            continue;
+        }
+
+        candidate = base_name(image);
+        if (ignored_process_name(candidate)) {
+            memset(e, 0, sizeof(*e));
+            continue;
+        }
+
+        memset(&wc, 0, sizeof(wc));
+        wc.pid = e->pid;
+        EnumWindows(score_window_proc, (LPARAM)&wc);
+        if (!wc.area) continue;
+
+        if (wc.area > best_area ||
+            (wc.area == best_area && e->rx_qpc_ns > best_rx)) {
+            best_area = wc.area;
+            best_rx = e->rx_qpc_ns;
+            best_pid = e->pid;
+            snprintf(name, name_cap, "%s", candidate);
+            snprintf(path, path_cap, "%s", image);
+        }
     }
-    CloseHandle(snap);
+
     return best_pid;
 }
 
@@ -1613,7 +1620,7 @@ static void try_attach_target(probe_state *s) {
         if (!pid || !process_image_path(pid, path, sizeof(path))) return;
         snprintf(name, sizeof(name), "%s", s->requested_process);
     } else if (s->auto_mode) {
-        pid = find_auto_game(name, sizeof(name), path, sizeof(path));
+        pid = find_auto_game(s, name, sizeof(name), path, sizeof(path));
     }
     if (pid) (void)attach_target(s, pid, name, path);
 }
@@ -1756,7 +1763,6 @@ static void replay_pending_device(probe_state *s) {
                 fflush(s->vk_raw);
             }
             apply_vulkan_device_event(s, e->json);
-            s->vk_memory_valid = true;
             master_log(s, "PROBE", "recovered pre-attach Vulkan device identity");
         }
         memset(e, 0, sizeof(*e));
@@ -1905,7 +1911,6 @@ static void process_datagram(probe_state *s, char *buf, int len) {
             frame_push(s, now, source_frame_ns, submits);
         } else if (!_stricmp(type, "device")) {
             apply_vulkan_device_event(s, buf);
-            s->vk_memory_valid = true;
             write_manifest(s, false);
         } else if (!_stricmp(type, "memory")) {
             uint64_t allocated = json_u64(buf, "allocated_bytes", UINT64_MAX);
@@ -2698,8 +2703,8 @@ static int dgl_main(int argc, char **argv) {
     while (!quit) {
         now = qpc_ns();
         pump_messages();
-        if (!state.process) try_attach_target(&state);
         drain_udp(&state);
+        if (!state.process) try_attach_target(&state);
 
         if (state.session_open) {
             if (now - state.last_tail_scan_qpc_ns >= DGL_TAIL_SCAN_NS) {

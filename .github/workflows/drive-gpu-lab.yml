@@ -68,6 +68,25 @@ jobs:
           for token in legacy_toolhelp_tokens:
               if token in probe_text:
                   raise SystemExit(f'unsupported Tool Help ANSI suffix remains: {token}')
+
+          # Device-gate regression: auto mode must be Vulkan-evidence driven.
+          assert '"wfm.exe"' in probe_text
+          assert '"winefile.exe"' in probe_text
+          assert 'static DWORD find_auto_game(probe_state *s,' in probe_text
+          assert 'pending_device_event *e = &s->pending_device[i];' in probe_text
+          assert 'pid = find_auto_game(s, name, sizeof(name), path, sizeof(path));' in probe_text
+          loop_anchor = 'pump_messages();'
+          drain_anchor = 'drain_udp(&state);'
+          attach_anchor = 'if (!state.process) try_attach_target(&state);'
+          loop_pos = probe_text.rfind(loop_anchor)
+          assert loop_pos >= 0
+          loop_window = probe_text[loop_pos:loop_pos + 512]
+          assert drain_anchor in loop_window and attach_anchor in loop_window
+          assert loop_window.index(drain_anchor) < loop_window.index(attach_anchor)
+          assert probe_text.count('s->vk_memory_valid = true;') == 1
+          assert 'if (allocated != UINT64_MAX || peak != UINT64_MAX) s->vk_memory_valid = true;' in probe_text
+          print('auto-target Vulkan PID evidence: PASS')
+          print('VK memory validity semantics: PASS')
           print('Tool Help API naming: PASS')
           print('source tree + manifest + SPDX: PASS')
           PY

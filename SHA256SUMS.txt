@@ -1,7 +1,7 @@
-f8fc4a22f5c1c1a08280b6a97aa9dd35868873ad7c926bd4f9e8227bd9a4a24a  .github/workflows/drive-gpu-lab.yml
+97480911fbff9117a289ed3d396dfc7e6f577838df56180492da5e67e27424fa  .github/workflows/drive-gpu-lab.yml
 1d80d145e813253fc6f16ddee1610aa804b970e90a4b82ab39ebf6416b68217a  tools/drive-gpu-lab/.clang-format
 f74b55301494451eb391062335ff6a07ff153124022821442cb2b910a629d7bb  tools/drive-gpu-lab/.gitignore
-c613f3d9ec800ed1bb35862b2cee5b42d0219392e04cbb8da8d4411074d280f1  tools/drive-gpu-lab/CHANGELOG.md
+fe654869e70e5d06600cc9a3277d6d8dec2bf5a552fabbb0810d07ca98219ed6  tools/drive-gpu-lab/CHANGELOG.md
 76ead7fd58aa225eb61aa9ceac7b765ca6413d83fc14f1f97f2e859a04a79312  tools/drive-gpu-lab/CMakeLists.txt
 8f9a331838f60e895e396497546bf53b02f47b1b02f16b6dcb9764da09ef82cf  tools/drive-gpu-lab/LICENSE
 cac7533d6c929f9140615353ae1eaa6f52c88327d71653502a39dc6ae7184384  tools/drive-gpu-lab/README.md
@@ -9,7 +9,7 @@ cac7533d6c929f9140615353ae1eaa6f52c88327d71653502a39dc6ae7184384  tools/drive-gp
 710f7fe9d43906e7237d1725cd10143979d6178f6db18918cf2880c11e67aa0e  tools/drive-gpu-lab/config/winlator-env-deep-debug.txt
 3a3fd479906648480e32713db5deb4133af65e35a58deb7f29df58fa6e56c44d  tools/drive-gpu-lab/config/winlator-env-normal.txt
 f95457e90450f3c5271971de9b72d183dd55e718a723ec73fda2033a0f78b42e  tools/drive-gpu-lab/docs/ARCHITECTURE.md
-305e62cc2c195bd26fa031fef1879e6f0e0b48dbcdb00b947e3402b83b53b465  tools/drive-gpu-lab/docs/DETECTION.md
+cdd7cd3f3aa59a684e18ac4aaf55354d4422bd264b7f7af94f477fbe8c64300b  tools/drive-gpu-lab/docs/DETECTION.md
 277810ea34864f9634ae997c8d38f4469ab81593802cbb35c86065ffb82998d9  tools/drive-gpu-lab/docs/INSTALL-WINLATOR.md
 c5bdaf6012786ea592bac45f7684b3e63b55080d8b74ccd54e52197038fbecee  tools/drive-gpu-lab/docs/PRIVACY.md
 4592151497f412e3e31823777e7f1a0ef434911f83326a50b50e8074327ada58  tools/drive-gpu-lab/docs/PROTOCOL.md
@@ -26,7 +26,7 @@ c5bdaf6012786ea592bac45f7684b3e63b55080d8b74ccd54e52197038fbecee  tools/drive-gp
 c735171a69093fbb57a71c9d2915a992b0fd99b5dd9972c4ff286bf842aca157  tools/drive-gpu-lab/src/dgl_ring.c
 4db35667c2d4f727a179aab32a316970270be755fcba6918553c356ffc63c371  tools/drive-gpu-lab/src/hostd_posix.c
 10bac8261760b32a069cac7dbe28cb40c2b30ccea3c54baa5d73066b99b25613  tools/drive-gpu-lab/src/probe_win.rc
-ee12d3c1c125984f5c29fe19cccfc6d9c2c0c6d11b0e0e1e3ff1699cd42db4e4  tools/drive-gpu-lab/src/probe_win32.c
+3df58dfd6f037a183e3c421e108814270b7c27e3b37c79790f6fe256efe4fb44  tools/drive-gpu-lab/src/probe_win32.c
 2c48c30022a83c35622cfa3634b422571a46cfd57f7b42efd6eceedd12bcead1  tools/drive-gpu-lab/src/sha256.c
 94179a8e4d1190164c6426606b7bd6186831a6f2e0e958cfdd6b92cd0395d4b5  tools/drive-gpu-lab/src/sha256.h
 3dcacb6402b50776ac791748bf91a559fa201565af3d60e9d845b60e747a9e6f  tools/drive-gpu-lab/tests/test_common.c
