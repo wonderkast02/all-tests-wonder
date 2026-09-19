@@ -1,0 +1,184 @@
+name: Drive GPU Lab
+
+on:
+  push:
+    paths:
+      - 'tools/drive-gpu-lab/**'
+      - '.github/workflows/drive-gpu-lab.yml'
+  pull_request:
+    paths:
+      - 'tools/drive-gpu-lab/**'
+      - '.github/workflows/drive-gpu-lab.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drive-gpu-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Source quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Repository hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test "$(cat tools/drive-gpu-lab/VERSION)" = "0.1.0-dev.1"
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path('tools/drive-gpu-lab')
+          required = [
+              root/'README.md', root/'LICENSE', root/'CHANGELOG.md', root/'CMakeLists.txt',
+              root/'src/probe_win32.c', root/'src/hostd_posix.c',
+              root/'layer/vk_layer_drive.c', root/'include/dgl_protocol.h'
+          ]
+          for p in required:
+              if not p.is_file():
+                  raise SystemExit(f'missing required file: {p}')
+          print('source tree: PASS')
+          PY
+
+  linux:
+    name: Linux hostd + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Configure
+        run: cmake -S tools/drive-gpu-lab -B build/dgl-linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DDGL_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build/dgl-linux --parallel
+      - name: Unit tests
+        run: ctest --test-dir build/dgl-linux --output-on-failure
+      - name: Host daemon protocol smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          build/dgl-linux/g720-hostd --once --stdout | tee build/dgl-linux/hostd-smoke.jsonl
+          python3 - <<'PY'
+          import json
+          lines = [x for x in open('build/dgl-linux/hostd-smoke.jsonl', encoding='utf-8') if x.strip()]
+          assert len(lines) >= 2, lines
+          events = [json.loads(x) for x in lines]
+          assert events[0]['source'] == 'hostd' and events[0]['type'] == 'identity'
+          assert events[1]['source'] == 'hostd' and events[1]['type'] == 'telemetry'
+          assert all(x['v'] == 1 for x in events)
+          print('hostd protocol smoke: PASS')
+          PY
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          D=dist/drive-gpu-lab-linux-x86_64
+          mkdir -p "$D"
+          cp build/dgl-linux/g720-hostd "$D/"
+          cp tools/drive-gpu-lab/{README.md,VERSION,LICENSE,CHANGELOG.md} "$D/"
+          (cd "$D" && sha256sum g720-hostd README.md VERSION LICENSE CHANGELOG.md > SHA256SUMS.txt)
+          tar -C dist -czf dist/drive-gpu-lab-linux-x86_64.tar.gz drive-gpu-lab-linux-x86_64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: drive-gpu-lab-linux-x86_64
+          path: dist/drive-gpu-lab-linux-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  android:
+    name: Android arm64 hostd
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      - name: Install pinned NDK
+        run: yes | sdkmanager 'ndk;28.2.13676358'
+      - name: Configure arm64-v8a
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S tools/drive-gpu-lab -B build/dgl-android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DDGL_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build/dgl-android --target g720-hostd --parallel
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          D=dist/drive-gpu-lab-android-arm64
+          mkdir -p "$D"
+          cp build/dgl-android/g720-hostd "$D/g720-hostd"
+          cp tools/drive-gpu-lab/{README.md,VERSION,LICENSE,CHANGELOG.md} "$D/"
+          (cd "$D" && sha256sum g720-hostd README.md VERSION LICENSE CHANGELOG.md > SHA256SUMS.txt)
+          (cd dist && zip -9 -r drive-gpu-lab-android-arm64.zip drive-gpu-lab-android-arm64)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: drive-gpu-lab-android-arm64
+          path: dist/drive-gpu-lab-android-arm64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    name: Windows ${{ matrix.arch }} probe + Vulkan layer
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            cmake_arch: x64
+          - arch: x86
+            cmake_arch: Win32
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Configure
+        shell: pwsh
+        run: cmake -S tools/drive-gpu-lab -B build/dgl-windows-${{ matrix.arch }} -A ${{ matrix.cmake_arch }} -DDGL_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        shell: pwsh
+        run: cmake --build build/dgl-windows-${{ matrix.arch }} --config Release --parallel
+      - name: Unit tests
+        shell: pwsh
+        run: ctest --test-dir build/dgl-windows-${{ matrix.arch }} -C Release --output-on-failure
+      - name: Verify PE outputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'build/dgl-windows-${{ matrix.arch }}/Release'
+          foreach ($f in @('G720Probe.exe','G720VkLayer.dll','VK_LAYER_DRIVE_G720_telemetry.json')) {
+            if (-not (Test-Path "$root/$f")) { throw "missing $root/$f" }
+          }
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $d = 'dist/drive-gpu-lab-windows-${{ matrix.arch }}'
+          $root = 'build/dgl-windows-${{ matrix.arch }}/Release'
+          New-Item -ItemType Directory -Force -Path $d | Out-Null
+          Copy-Item "$root/G720Probe.exe" $d
+          Copy-Item "$root/G720VkLayer.dll" $d
+          Copy-Item "$root/VK_LAYER_DRIVE_G720_telemetry.json" $d
+          Copy-Item 'tools/drive-gpu-lab/README.md' $d
+          Copy-Item 'tools/drive-gpu-lab/VERSION' $d
+          Copy-Item 'tools/drive-gpu-lab/LICENSE' $d
+          Copy-Item 'tools/drive-gpu-lab/CHANGELOG.md' $d
+          Copy-Item 'tools/drive-gpu-lab/config' "$d/config" -Recurse
+          Copy-Item 'tools/drive-gpu-lab/docs' "$d/docs" -Recurse
+          Get-ChildItem $d -File | Sort-Object Name | ForEach-Object {
+            $h = Get-FileHash $_.FullName -Algorithm SHA256
+            "$($h.Hash.ToLower())  $($_.Name)"
+          } | Set-Content "$d/SHA256SUMS.txt"
+          Compress-Archive -Path "$d/*" -DestinationPath 'dist/drive-gpu-lab-windows-${{ matrix.arch }}.zip' -CompressionLevel Optimal
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: drive-gpu-lab-windows-${{ matrix.arch }}
+          path: dist/drive-gpu-lab-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+          retention-days: 30

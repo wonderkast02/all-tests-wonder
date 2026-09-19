@@ -1,0 +1,37 @@
+# Build trees
+build/
+out/
+dist/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Generated binaries / archives
+*.exe
+*.dll
+*.so
+*.a
+*.o
+*.obj
+*.pdb
+*.zip
+*.7z
+*.tar
+*.tar.gz
+
+# Runtime/log output
+DriveGpuLab/
+*.log
+*.jsonl
+*.csv
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,14 @@
+# Drive GPU Lab 0.1.0-dev.1 - NORMAL CAPTURE
+# Match the Vulkan layer architecture to the game process (x64 or x86).
+VK_LAYER_PATH=<PATH_TO_DRIVE_GPU_LAB_LAYER>
+VK_INSTANCE_LAYERS=VK_LAYER_DRIVE_G720_telemetry
+DRIVE_G720_PROBE_PORT=47520
+
+# Light wrapper logging. G720Probe automatically tails logs it can locate.
+DXVK_LOG_LEVEL=info
+VKD3D_DEBUG=warn
+
+# Optional: point DXVK/VKD3D to a known log directory/file if your Winlator setup
+# does not already place them beside the game/container.
+# DXVK_LOG_PATH=Z:\DriveGpuLab\wrapper-logs
+# VKD3D_LOG_FILE=Z:\DriveGpuLab\wrapper-logs\vkd3d-live.log

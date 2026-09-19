@@ -1,0 +1,11 @@
+# Drive GPU Lab 0.1.0-dev.1 - DEEP DEBUG
+# This profile can materially change performance. Do not compare it to normal benchmarks.
+VK_LAYER_PATH=<PATH_TO_DRIVE_GPU_LAB_LAYER>
+VK_INSTANCE_LAYERS=VK_LAYER_DRIVE_G720_telemetry
+DRIVE_G720_PROBE_PORT=47520
+DXVK_LOG_LEVEL=debug
+VKD3D_DEBUG=trace
+
+# Do not hard-code WINEDEBUG=all, Box64 full tracing, or global Mesa/PanVK tracing here.
+# Those sources can produce multi-GB logs and hide timing behavior. Select the narrow
+# channel required by the bug, and G720Probe will ingest the resulting log if discoverable.

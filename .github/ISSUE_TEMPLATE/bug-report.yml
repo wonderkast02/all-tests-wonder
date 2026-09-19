@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a reproducible All Tests Wonder / Drive GPU Lab defect
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste secrets or private identifiers. Attach the smallest useful
+        session evidence and preserve exact build/runtime identity.
+  - type: input
+    id: component
+    attributes:
+      label: Component
+      placeholder: Drive GPU Lab 0.1.0-dev.1
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform / device
+      placeholder: Android / Winlator / GPU / OS version
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Session ID, manifest/summary, relevant logs, commit or artifact SHA-256.
