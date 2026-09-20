@@ -85,11 +85,19 @@ jobs:
           $vswhere = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe"
           $vsInstall = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
           if (-not $vsInstall) { throw 'Visual Studio VC tools not found' }
-          $dumpbin = Get-ChildItem -Path "$vsInstall\\VC\\Tools\\MSVC" -Filter dumpbin.exe -File -Recurse |
-            Where-Object { $_.FullName -match '\\bin\\Hostx64\\x64\\dumpbin\\.exe$' } |
+          $dumpbinCandidates = Get-ChildItem -Path "$vsInstall\\VC\\Tools\\MSVC" -Filter dumpbin.exe -File -Recurse
+          $dumpbin = $dumpbinCandidates |
+            Where-Object {
+              $_.FullName.EndsWith('\bin\Hostx64\x64\dumpbin.exe',
+                [System.StringComparison]::OrdinalIgnoreCase)
+            } |
             Sort-Object FullName -Descending |
             Select-Object -First 1 -ExpandProperty FullName
-          if (-not $dumpbin) { throw 'dumpbin.exe not found' }
+          if (-not $dumpbin) {
+            $dumpbinCandidates | ForEach-Object { Write-Host "DUMPBIN_CANDIDATE=$($_.FullName)" }
+            throw 'dumpbin.exe x64 not found'
+          }
+          Write-Host "DUMPBIN=$dumpbin"
 
           $loader = 'install/khronos-loader/bin/vulkan-1.dll'
           $checker = 'build/loader-check/Release/G720VkLoaderCheck.exe'
@@ -97,7 +105,7 @@ jobs:
 
           foreach ($f in @($loader, $checker, $layer)) {
             $headers = (& $dumpbin /nologo /headers $f) -join "`n"
-            if ($headers -notmatch '(?im)machine \\(x64\\)') { throw "not x64: $f" }
+            if ($headers -notmatch '(?im)\bmachine\s+\(x64\)') { throw "not x64: $f" }
           }
 
           $exports = (& $dumpbin /nologo /exports $loader) -join "`n"
@@ -144,7 +152,7 @@ jobs:
           Get-ChildItem $d -File -Recurse | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
             Sort-Object FullName | ForEach-Object {
               $h = Get-FileHash $_.FullName -Algorithm SHA256
-              $rel = $_.FullName.Substring($base.Length).TrimStart('\\','/').Replace('\\','/')
+              $rel = $_.FullName.Substring($base.Length).TrimStart('\','/').Replace('\','/')
               "$($h.Hash.ToLower())  $rel"
             } | Set-Content "$d/SHA256SUMS.txt" -Encoding ascii
 
