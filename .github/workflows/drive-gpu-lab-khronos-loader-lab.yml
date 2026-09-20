@@ -1,0 +1,174 @@
+name: Drive GPU Lab - Khronos Loader Lab
+
+on:
+  push:
+    branches:
+      - 'lab/khronos-loader-*'
+    paths:
+      - 'tools/drive-gpu-lab/lab/khronos-loader/**'
+      - '.github/workflows/drive-gpu-lab-khronos-loader-lab.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dgl-khronos-loader-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    name: Windows x64 Khronos loader lab
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Build Drive GPU Lab x64 candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S tools/drive-gpu-lab -B build/dgl-x64 -A x64 -DDGL_WARNINGS_AS_ERRORS=ON
+          cmake --build build/dgl-x64 --config Release --parallel
+          ctest --test-dir build/dgl-x64 -C Release --output-on-failure
+
+      - name: Checkout pinned Khronos Vulkan Loader source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force external | Out-Null
+          git init external/Vulkan-Loader
+          git -C external/Vulkan-Loader remote add origin https://github.com/KhronosGroup/Vulkan-Loader.git
+          git -C external/Vulkan-Loader fetch --depth=1 origin 61a9c50248e09f3a0e0be7ce6f8bb1663855f979
+          git -C external/Vulkan-Loader checkout --detach FETCH_HEAD
+          $actual = (git -C external/Vulkan-Loader rev-parse HEAD).Trim()
+          if ($actual -ne '61a9c50248e09f3a0e0be7ce6f8bb1663855f979') { throw "Vulkan-Loader SHA mismatch: $actual" }
+
+      - name: Build official Khronos Windows loader
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $PWD 'install/khronos-loader'
+          cmake -S external/Vulkan-Loader -B build/khronos-loader -A x64 `
+            -DUPDATE_DEPS=ON `
+            -DBUILD_TESTS=OFF `
+            -DCMAKE_INSTALL_PREFIX="$prefix"
+          cmake --build build/khronos-loader --config Release --parallel
+          cmake --build build/khronos-loader --config Release --target install
+          if (-not (Test-Path "$prefix/bin/vulkan-1.dll")) {
+            throw 'official vulkan-1.dll missing after install'
+          }
+
+      - name: Checkout Vulkan-Headers for checker
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --depth=1 --branch v1.3.280 https://github.com/KhronosGroup/Vulkan-Headers.git external/Vulkan-Headers
+          $headersSha = (git -C external/Vulkan-Headers rev-parse HEAD).Trim()
+          if ($headersSha -ne '577baa05033cf1d9236b3d078ca4b3269ed87a2b') { throw "Vulkan-Headers SHA mismatch: $headersSha" }
+          Write-Host "Vulkan-Headers=$headersSha"
+
+      - name: Build G720VkLoaderCheck
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inc = Join-Path $PWD 'external/Vulkan-Headers/include'
+          cmake -S tools/drive-gpu-lab/lab/khronos-loader -B build/loader-check -A x64 `
+            -DVULKAN_HEADERS_INCLUDE="$inc"
+          cmake --build build/loader-check --config Release --parallel
+          if (-not (Test-Path 'build/loader-check/Release/G720VkLoaderCheck.exe')) {
+            throw 'G720VkLoaderCheck.exe missing'
+          }
+
+      - name: Verify PE and exports
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe"
+          $vsInstall = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+          if (-not $vsInstall) { throw 'Visual Studio VC tools not found' }
+          $dumpbin = Get-ChildItem -Path "$vsInstall\\VC\\Tools\\MSVC" -Filter dumpbin.exe -File -Recurse |
+            Where-Object { $_.FullName -match '\\bin\\Hostx64\\x64\\dumpbin\\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $dumpbin) { throw 'dumpbin.exe not found' }
+
+          $loader = 'install/khronos-loader/bin/vulkan-1.dll'
+          $checker = 'build/loader-check/Release/G720VkLoaderCheck.exe'
+          $layer = 'build/dgl-x64/Release/G720VkLayer.dll'
+
+          foreach ($f in @($loader, $checker, $layer)) {
+            $headers = (& $dumpbin /nologo /headers $f) -join "`n"
+            if ($headers -notmatch '(?im)machine \\(x64\\)') { throw "not x64: $f" }
+          }
+
+          $exports = (& $dumpbin /nologo /exports $loader) -join "`n"
+          foreach ($sym in @('vkCreateInstance','vkEnumerateInstanceLayerProperties','vkGetInstanceProcAddr','vkGetDeviceProcAddr')) {
+            if ($exports -notmatch [regex]::Escape($sym)) { throw "loader export missing: $sym" }
+          }
+
+          $layerExports = (& $dumpbin /nologo /exports $layer) -join "`n"
+          foreach ($sym in @('dgl_vkNegotiateLoaderLayerInterfaceVersion','dgl_layerGetInstanceProcAddr','dgl_layerGetDeviceProcAddr')) {
+            if ($layerExports -notmatch [regex]::Escape($sym)) { throw "layer export missing: $sym" }
+          }
+
+      - name: Package isolated Winlator lab
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $d = 'dist/DriveGpuLab-KhronosLoaderLab-x64'
+          New-Item -ItemType Directory -Force $d | Out-Null
+
+          Copy-Item 'install/khronos-loader/bin/vulkan-1.dll' "$d/vulkan-1.dll"
+          Copy-Item 'build/loader-check/Release/G720VkLoaderCheck.exe' "$d/G720VkLoaderCheck.exe"
+          Copy-Item 'build/dgl-x64/Release/G720Probe.exe' "$d/G720Probe.exe"
+          Copy-Item 'build/dgl-x64/Release/G720VkLayer.dll' "$d/G720VkLayer.dll"
+          Copy-Item 'build/dgl-x64/Release/VK_LAYER_DRIVE_G720_telemetry.json' "$d/VK_LAYER_DRIVE_G720_telemetry.json"
+          Copy-Item 'tools/drive-gpu-lab/lab/khronos-loader/winevulkan-icd.json' "$d/winevulkan-icd.json"
+          Copy-Item 'tools/drive-gpu-lab/lab/khronos-loader/LAB-README.txt' "$d/LAB-README.txt"
+
+          $loaderSha = (git -C external/Vulkan-Loader rev-parse HEAD).Trim()
+          $headersSha = (git -C external/Vulkan-Headers rev-parse HEAD).Trim()
+          @(
+            'DRIVE GPU LAB — KHRONOS LOADER LAB'
+            'source_repo=wonderkast02/all-tests-wonder'
+            'source_commit=${{ github.sha }}'
+            'vulkan_loader_repo=KhronosGroup/Vulkan-Loader'
+            "vulkan_loader_commit=$loaderSha"
+            'vulkan_headers_repo=KhronosGroup/Vulkan-Headers'
+            'vulkan_headers_tag=v1.3.280'
+            "vulkan_headers_commit=$headersSha"
+            'architecture=x64'
+            'purpose=isolated-wine-loader-layer-icd-qualification'
+          ) | Set-Content "$d/PROVENANCE.txt" -Encoding utf8
+
+          $base = (Resolve-Path $d).Path
+          Get-ChildItem $d -File -Recurse | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
+            Sort-Object FullName | ForEach-Object {
+              $h = Get-FileHash $_.FullName -Algorithm SHA256
+              $rel = $_.FullName.Substring($base.Length).TrimStart('\\','/').Replace('\\','/')
+              "$($h.Hash.ToLower())  $rel"
+            } | Set-Content "$d/SHA256SUMS.txt" -Encoding ascii
+
+          Compress-Archive -Path "$d/*" -DestinationPath 'dist/DriveGpuLab-KhronosLoaderLab-x64.zip' -CompressionLevel Optimal
+
+      - name: Verify package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $d = 'dist/DriveGpuLab-KhronosLoaderLab-x64'
+          Push-Location $d
+          foreach ($line in Get-Content SHA256SUMS.txt) {
+            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { throw "bad SHA line: $line" }
+            $expected = $Matches[1]
+            $file = $Matches[2]
+            $actual = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $expected) { throw "SHA mismatch: $file" }
+          }
+          Pop-Location
+          Write-Host 'KHRONOS_LOADER_LAB_PACKAGE=PASS'
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: drive-gpu-lab-khronos-loader-lab-x64
+          path: dist/DriveGpuLab-KhronosLoaderLab-x64.zip
+          if-no-files-found: error
+          retention-days: 14
