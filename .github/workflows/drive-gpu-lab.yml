@@ -85,6 +85,16 @@ jobs:
           assert loop_window.index(drain_anchor) < loop_window.index(attach_anchor)
           assert probe_text.count('s->vk_memory_valid = true;') == 1
           assert 'if (allocated != UINT64_MAX || peak != UINT64_MAX) s->vk_memory_valid = true;' in probe_text
+          assert 'DGL_SHARED_LOG_SCAN_NS' in probe_text
+          assert 'discover_shared_log_roots' in probe_text
+          assert 'DGL_LOG_ROOTS' in probe_text
+          assert 'log-sources.tsv' in probe_text
+          assert '"logs.txt"' in probe_text
+          assert '"box64-"' in probe_text
+          assert '"previous"' in probe_text
+          assert 'Documents\\\\Winlator' in probe_text
+          assert 'Documents\\\\Bannerlator' in probe_text
+          print('shared Winlator/Bannerlator log auto-discovery: PASS')
           print('auto-target Vulkan PID evidence: PASS')
           print('VK memory validity semantics: PASS')
           print('Tool Help API naming: PASS')

@@ -32,3 +32,24 @@ This dual path is intentional: a file name says what was loaded; an embedded ide
 ## Environment scope
 
 Only runtime-relevant prefixes are exported to `environment.json`; unrelated user environment is excluded. Current families include DXVK, VKD3D, Wine, Box64, FEX, Proton/Steam compatibility, Vulkan, Mesa, Pan/Mali-related Mesa flags, Gallium, Zink and Winlator variables.
+
+
+## Automatic shared-runtime log discovery
+
+The stacked G720Probe auto-log candidate extends session-local log correlation without
+changing the public release. During an attached session it periodically inspects the
+Wine-visible Android shared Documents roots for Winlator/Bannerlator logs, including
+`logs.txt`, `box64-*.txt`, Wine, DXVK, VKD3D, Vulkan, Mesa and PanVK text/log files.
+
+Default mapped roots:
+
+- `Z:\storage\emulated\0\Documents\Winlator`
+- `Z:\storage\emulated\0\Documents\winlator`
+- `Z:\storage\emulated\0\Documents\Bannerlator`
+- `Z:\storage\emulated\0\Documents\bannerlator`
+
+Additional semicolon-separated Windows roots can be supplied through `DGL_LOG_ROOTS`.
+Only recently modified files are considered, archive/output directories such as
+`previous` and DriveGpuLab are skipped, and each source starts tailing at its current
+EOF so stale pre-session content is not merged into the new session. Discovered sources
+are recorded in `raw/log-sources.tsv`.

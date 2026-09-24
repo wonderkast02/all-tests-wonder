@@ -49,6 +49,9 @@
 #define DGL_PROCESS_SCAN_NS 500000000ull
 #define DGL_MODULE_SCAN_NS 10000000000ull
 #define DGL_TAIL_SCAN_NS 1000000000ull
+#define DGL_SHARED_LOG_SCAN_NS 2000000000ull
+#define DGL_SHARED_LOG_MAX_AGE_100NS 432000000000ull
+#define DGL_SHARED_LOG_MAX_DEPTH 7u
 #define DGL_SAMPLE_NS 500000000ull
 
 #ifndef PROCESS_QUERY_LIMITED_INFORMATION
@@ -174,6 +177,7 @@ typedef struct probe_state {
     uint64_t last_process_scan_qpc_ns;
     uint64_t last_module_scan_qpc_ns;
     uint64_t last_tail_scan_qpc_ns;
+    uint64_t last_shared_log_scan_qpc_ns;
     uint64_t last_tail_poll_qpc_ns;
     uint64_t prev_proc_100ns;
     uint64_t prev_cpu_sample_qpc_ns;
@@ -1050,6 +1054,136 @@ static const char *tail_tag_for_name(const char *name) {
     return NULL;
 }
 
+
+static bool ends_with_ci(const char *value, const char *suffix) {
+    size_t a, b;
+    if (!value || !suffix) return false;
+    a = strlen(value);
+    b = strlen(suffix);
+    if (b > a) return false;
+    return _stricmp(value + a - b, suffix) == 0;
+}
+
+static bool shared_log_dir_skipped(const char *name) {
+    if (!name || !name[0]) return true;
+    if (!strcmp(name, ".") || !strcmp(name, "..")) return true;
+    if (!_stricmp(name, "previous") || !_stricmp(name, ".git")) return true;
+    if (dgl_contains_ci(name, "drivegpulab") ||
+        dgl_contains_ci(name, "drive-gpu-lab") ||
+        dgl_contains_ci(name, "log termux")) return true;
+    return false;
+}
+
+static const char *shared_log_tag_for_name(const char *name) {
+    const char *tag;
+    if (!name || !name[0]) return NULL;
+    if (!_stricmp(name, "logs.txt")) return "WINLATOR";
+    if (!_strnicmp(name, "box64-", 6) && ends_with_ci(name, ".txt")) return "BOX64";
+    if (!ends_with_ci(name, ".log") && !ends_with_ci(name, ".txt")) return NULL;
+    tag = tail_tag_for_name(name);
+    return tag;
+}
+
+static bool shared_log_recent(const WIN32_FIND_DATAA *fd) {
+    FILETIME now_ft;
+    ULARGE_INTEGER now, modified;
+    if (!fd) return false;
+    GetSystemTimeAsFileTime(&now_ft);
+    now.LowPart = now_ft.dwLowDateTime;
+    now.HighPart = now_ft.dwHighDateTime;
+    modified.LowPart = fd->ftLastWriteTime.dwLowDateTime;
+    modified.HighPart = fd->ftLastWriteTime.dwHighDateTime;
+    if (!modified.QuadPart || modified.QuadPart > now.QuadPart) return true;
+    return now.QuadPart - modified.QuadPart <= DGL_SHARED_LOG_MAX_AGE_100NS;
+}
+
+static void record_tail_source(probe_state *s, const log_tail *t) {
+    char ledger[DGL_PATH_CAP];
+    char clean[DGL_PATH_CAP];
+    FILE *f;
+    size_t i;
+    bool header;
+    if (!s || !s->session_open || !t) return;
+    path_join(ledger, sizeof(ledger), s->raw_dir, "log-sources.tsv");
+    header = file_size_or_zero(ledger) == 0;
+    snprintf(clean, sizeof(clean), "%s", t->path);
+    for (i = 0; clean[i]; ++i) {
+        if (clean[i] == '\t' || clean[i] == '\r' || clean[i] == '\n') clean[i] = ' ';
+    }
+    f = fopen(ledger, "a");
+    if (!f) return;
+    if (header) fprintf(f, "qpc_ns\ttag\tinitial_offset\tpath\n");
+    fprintf(f, "%llu\t%s\t%lld\t%s\n",
+            (unsigned long long)qpc_ns(), t->tag,
+            (long long)t->position, clean);
+    fclose(f);
+}
+
+static void discover_shared_log_tree(probe_state *s, const char *root, unsigned depth) {
+    char pattern[DGL_PATH_CAP];
+    WIN32_FIND_DATAA fd;
+    HANDLE h;
+    int n;
+    if (!s || !s->session_open || !root || !root[0]) return;
+    if (depth > DGL_SHARED_LOG_MAX_DEPTH || s->tail_count >= DGL_MAX_TAILS) return;
+    n = snprintf(pattern, sizeof(pattern), "%s\\*", root);
+    if (n < 0 || (size_t)n >= sizeof(pattern)) return;
+    h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        char path[DGL_PATH_CAP];
+        const char *tag;
+        n = snprintf(path, sizeof(path), "%s\\%s", root, fd.cFileName);
+        if (n < 0 || (size_t)n >= sizeof(path)) continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+            if (shared_log_dir_skipped(fd.cFileName)) continue;
+            discover_shared_log_tree(s, path, depth + 1u);
+            if (s->tail_count >= DGL_MAX_TAILS) break;
+            continue;
+        }
+        if (!shared_log_recent(&fd)) continue;
+        tag = shared_log_tag_for_name(fd.cFileName);
+        if (!tag) continue;
+        (void)add_tail_path(s, path, tag, false);
+        if (s->tail_count >= DGL_MAX_TAILS) break;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+static void discover_shared_log_roots(probe_state *s) {
+    static const char *const roots[] = {
+        "Z:\\storage\\emulated\\0\\Documents\\Winlator",
+        "Z:\\storage\\emulated\\0\\Documents\\winlator",
+        "Z:\\storage\\emulated\\0\\Documents\\Bannerlator",
+        "Z:\\storage\\emulated\\0\\Documents\\bannerlator",
+        NULL
+    };
+    char extra[DGL_PATH_CAP * 2];
+    DWORD len;
+    int i;
+    if (!s || !s->session_open) return;
+    for (i = 0; roots[i] && s->tail_count < DGL_MAX_TAILS; ++i)
+        discover_shared_log_tree(s, roots[i], 0u);
+
+    len = GetEnvironmentVariableA("DGL_LOG_ROOTS", extra, (DWORD)sizeof(extra));
+    if (len > 0 && len < sizeof(extra)) {
+        char *p = extra;
+        while (*p && s->tail_count < DGL_MAX_TAILS) {
+            char *end;
+            char *semi;
+            while (*p == ' ' || *p == '\t') ++p;
+            semi = strchr(p, ';');
+            if (semi) *semi = '\0';
+            end = p + strlen(p);
+            while (end > p && (end[-1] == ' ' || end[-1] == '\t')) *--end = '\0';
+            if (*p) discover_shared_log_tree(s, p, 0u);
+            if (!semi) break;
+            p = semi + 1;
+        }
+    }
+}
+
 static void safe_filename(const char *input, char *output, size_t cap) {
     size_t i, j = 0;
     if (!cap) return;
@@ -1075,6 +1209,7 @@ static int add_tail_path(probe_state *s, const char *path, const char *tag, bool
     snprintf(t->raw_path, sizeof(t->raw_path), "%s\\external-%02llu-%s-%s",
              s->raw_dir, (unsigned long long)s->tail_count, tag, filename);
     t->position = from_beginning ? 0 : file_size_or_zero(path);
+    record_tail_source(s, t);
     return 0;
 }
 
@@ -1301,6 +1436,7 @@ static void reset_session_runtime(probe_state *s) {
     s->tail_count = 0;
     s->last_module_scan_qpc_ns = 0;
     s->last_tail_scan_qpc_ns = 0;
+    s->last_shared_log_scan_qpc_ns = 0;
     s->last_tail_poll_qpc_ns = 0;
     s->prev_proc_100ns = 0;
     s->prev_cpu_sample_qpc_ns = 0;
@@ -1413,6 +1549,8 @@ static int open_session(probe_state *s) {
         master_log(s, "PROBE", msg);
     }
     discover_external_logs(s);
+    discover_shared_log_roots(s);
+    s->last_shared_log_scan_qpc_ns = qpc_ns();
     send_host_session_hello(s);
     return 0;
 }
@@ -2710,6 +2848,10 @@ static int dgl_main(int argc, char **argv) {
             if (now - state.last_tail_scan_qpc_ns >= DGL_TAIL_SCAN_NS) {
                 discover_external_logs(&state);
                 state.last_tail_scan_qpc_ns = now;
+            }
+            if (now - state.last_shared_log_scan_qpc_ns >= DGL_SHARED_LOG_SCAN_NS) {
+                discover_shared_log_roots(&state);
+                state.last_shared_log_scan_qpc_ns = now;
             }
             if (now - state.last_tail_poll_qpc_ns >= 100000000ull) {
                 poll_external_tails(&state);
