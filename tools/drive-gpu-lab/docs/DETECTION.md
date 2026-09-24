@@ -9,7 +9,7 @@ Windows version resources provide ProductName/ProductVersion/FileDescription/Fil
 
 ### Automatic target selection
 
-In automatic mode, Drive GPU Lab does not attach merely because a process owns a large visible window. A candidate PID must first emit a valid `vklayer` `device` event from the explicit Drive GPU Lab Vulkan layer, remain alive, own a visible window, and not match a known Wine shell/utility process. Explicit `--pid` and `--process` modes remain available for controlled cases where automatic Vulkan evidence is intentionally unavailable.
+In automatic mode, Drive GPU Lab prefers a live candidate PID that emitted a valid `vklayer` `device` event from the explicit Drive GPU Lab Vulkan layer. When a game is launched normally from Winlator/Bannerlator and therefore does not inherit the separately started probe's layer environment, the probe falls back to native Windows process/window discovery: it selects the largest visible non-shell process, also considering child windows used by Wine virtual desktops. Explicit `--pid` and `--process` modes remain available for controlled targeting. Vulkan device evidence enriches and confirms a session when available; it is not a prerequisite for native auto-target discovery.
 
 ## Wine / Proton
 

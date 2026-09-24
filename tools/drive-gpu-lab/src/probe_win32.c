@@ -708,7 +708,7 @@ static bool ignored_process_name(const char *name) {
         "explorer.exe", "services.exe", "winedevice.exe", "plugplay.exe", "rpcss.exe",
         "svchost.exe", "winemenubuilder.exe", "wineboot.exe", "start.exe", "cmd.exe",
         "conhost.exe", "rundll32.exe", "regedit.exe", "taskmgr.exe", "msiexec.exe",
-        "wfm.exe", "winefile.exe",
+        "wfm.exe", "winefile.exe", "winhandler.exe", "wine.exe", "wine64.exe",
         "G720Probe.exe", "G720Probe-x64.exe", "G720Probe-x86.exe", NULL
     };
     int i;
@@ -721,22 +721,39 @@ typedef struct window_score_ctx {
     uint64_t area;
 } window_score_ctx;
 
-static BOOL CALLBACK score_window_proc(HWND hwnd, LPARAM param) {
-    window_score_ctx *ctx = (window_score_ctx *)param;
+static void score_window_for_pid(HWND hwnd, window_score_ctx *ctx) {
     DWORD pid = 0;
     RECT r;
     LONG_PTR style;
     uint64_t area;
-    if (!IsWindowVisible(hwnd)) return TRUE;
+    if (!ctx || !IsWindowVisible(hwnd)) return;
     GetWindowThreadProcessId(hwnd, &pid);
-    if (pid != ctx->pid) return TRUE;
+    if (pid != ctx->pid) return;
     style = GetWindowLongPtrA(hwnd, GWL_STYLE);
-    if (!(style & WS_VISIBLE)) return TRUE;
-    if (!GetWindowRect(hwnd, &r)) return TRUE;
-    if (r.right <= r.left || r.bottom <= r.top) return TRUE;
+    if (!(style & WS_VISIBLE)) return;
+    if (!GetWindowRect(hwnd, &r)) return;
+    if (r.right <= r.left || r.bottom <= r.top) return;
     area = (uint64_t)(r.right - r.left) * (uint64_t)(r.bottom - r.top);
     if (area > ctx->area) ctx->area = area;
+}
+
+static BOOL CALLBACK score_child_window_proc(HWND hwnd, LPARAM param) {
+    score_window_for_pid(hwnd, (window_score_ctx *)param);
     return TRUE;
+}
+
+static BOOL CALLBACK score_window_proc(HWND hwnd, LPARAM param) {
+    score_window_for_pid(hwnd, (window_score_ctx *)param);
+    EnumChildWindows(hwnd, score_child_window_proc, param);
+    return TRUE;
+}
+
+static uint64_t visible_window_area_for_pid(DWORD pid) {
+    window_score_ctx wc;
+    memset(&wc, 0, sizeof(wc));
+    wc.pid = pid;
+    EnumWindows(score_window_proc, (LPARAM)&wc);
+    return wc.area;
 }
 
 static DWORD find_process_by_name(const char *name) {
@@ -761,19 +778,23 @@ static DWORD find_process_by_name(const char *name) {
 }
 
 static DWORD find_auto_game(probe_state *s, char *name, size_t name_cap,
-                            char *path, size_t path_cap) {
+                            char *path, size_t path_cap, bool *used_vulkan_evidence) {
     size_t i;
     DWORD best_pid = 0;
     uint64_t best_area = 0;
     uint64_t best_rx = 0;
     uint64_t now = qpc_ns();
+    HANDLE snap;
+    PROCESSENTRY32 pe;
+    if (used_vulkan_evidence) *used_vulkan_evidence = false;
     if (!s) return 0;
 
+    /* Prefer exact pre-attach Vulkan evidence when the game inherits the layer. */
     for (i = 0; i < DGL_PENDING_DEVICE_SLOTS; ++i) {
         pending_device_event *e = &s->pending_device[i];
         char image[DGL_PATH_CAP];
         const char *candidate;
-        window_score_ctx wc;
+        uint64_t area;
 
         if (!e->pid) continue;
         if (now < e->rx_qpc_ns ||
@@ -793,14 +814,12 @@ static DWORD find_auto_game(probe_state *s, char *name, size_t name_cap,
             continue;
         }
 
-        memset(&wc, 0, sizeof(wc));
-        wc.pid = e->pid;
-        EnumWindows(score_window_proc, (LPARAM)&wc);
-        if (!wc.area) continue;
+        area = visible_window_area_for_pid(e->pid);
+        if (!area) continue;
 
-        if (wc.area > best_area ||
-            (wc.area == best_area && e->rx_qpc_ns > best_rx)) {
-            best_area = wc.area;
+        if (area > best_area ||
+            (area == best_area && e->rx_qpc_ns > best_rx)) {
+            best_area = area;
             best_rx = e->rx_qpc_ns;
             best_pid = e->pid;
             snprintf(name, name_cap, "%s", candidate);
@@ -808,6 +827,46 @@ static DWORD find_auto_game(probe_state *s, char *name, size_t name_cap,
         }
     }
 
+    if (best_pid) {
+        if (used_vulkan_evidence) *used_vulkan_evidence = true;
+        return best_pid;
+    }
+
+    /*
+     * A game launched normally from Winlator/Bannerlator does not inherit the
+     * environment of a separately started G720Probe.exe. In that case the
+     * explicit Vulkan layer cannot be an auto-attach prerequisite. Fall back
+     * to the largest visible non-shell process, including child windows used
+     * by Wine virtual desktops.
+     */
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    memset(&pe, 0, sizeof(pe));
+    pe.dwSize = (DWORD)sizeof(pe);
+    best_area = 0;
+    best_pid = 0;
+    if (Process32First(snap, &pe)) {
+        do {
+            char image[DGL_PATH_CAP];
+            const char *candidate;
+            uint64_t area;
+            if (!pe.th32ProcessID) continue;
+            candidate = pe.szExeFile;
+            if (ignored_process_name(candidate)) continue;
+            if (!process_image_path(pe.th32ProcessID, image, sizeof(image))) continue;
+            candidate = base_name(image);
+            if (ignored_process_name(candidate)) continue;
+            area = visible_window_area_for_pid(pe.th32ProcessID);
+            if (!area) continue;
+            if (area > best_area) {
+                best_area = area;
+                best_pid = pe.th32ProcessID;
+                snprintf(name, name_cap, "%s", candidate);
+                snprintf(path, path_cap, "%s", image);
+            }
+        } while (Process32Next(snap, &pe));
+    }
+    CloseHandle(snap);
     return best_pid;
 }
 
@@ -1749,6 +1808,7 @@ static void try_attach_target(probe_state *s) {
     DWORD pid = 0;
     char name[MAX_PATH] = "";
     char path[DGL_PATH_CAP] = "";
+    bool auto_vulkan = false;
     uint64_t now = qpc_ns();
     if (s->process || now - s->last_process_scan_qpc_ns < DGL_PROCESS_SCAN_NS) return;
     s->last_process_scan_qpc_ns = now;
@@ -1761,9 +1821,13 @@ static void try_attach_target(probe_state *s) {
         if (!pid || !process_image_path(pid, path, sizeof(path))) return;
         snprintf(name, sizeof(name), "%s", s->requested_process);
     } else if (s->auto_mode) {
-        pid = find_auto_game(s, name, sizeof(name), path, sizeof(path));
+        pid = find_auto_game(s, name, sizeof(name), path, sizeof(path), &auto_vulkan);
     }
-    if (pid) (void)attach_target(s, pid, name, path);
+    if (pid && attach_target(s, pid, name, path) == 0 && s->auto_mode) {
+        master_log(s, "PROBE", auto_vulkan
+                   ? "auto target selected from pre-attach Vulkan device evidence"
+                   : "auto target selected from native visible-window fallback");
+    }
 }
 
 static void sample_process(probe_state *s, uint64_t now_ns) {

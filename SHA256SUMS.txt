@@ -9,7 +9,7 @@ cac7533d6c929f9140615353ae1eaa6f52c88327d71653502a39dc6ae7184384  tools/drive-gp
 710f7fe9d43906e7237d1725cd10143979d6178f6db18918cf2880c11e67aa0e  tools/drive-gpu-lab/config/winlator-env-deep-debug.txt
 3a3fd479906648480e32713db5deb4133af65e35a58deb7f29df58fa6e56c44d  tools/drive-gpu-lab/config/winlator-env-normal.txt
 f95457e90450f3c5271971de9b72d183dd55e718a723ec73fda2033a0f78b42e  tools/drive-gpu-lab/docs/ARCHITECTURE.md
-1c8e56edf64c98e936972d6ecc756da24ec3ebb27aa1f534d7871723adfa4099  tools/drive-gpu-lab/docs/DETECTION.md
+ae25f2434a897ffb11200659cd13b566724a583ec8cd8f89c08ee7b5d3432366  tools/drive-gpu-lab/docs/DETECTION.md
 277810ea34864f9634ae997c8d38f4469ab81593802cbb35c86065ffb82998d9  tools/drive-gpu-lab/docs/INSTALL-WINLATOR.md
 c5bdaf6012786ea592bac45f7684b3e63b55080d8b74ccd54e52197038fbecee  tools/drive-gpu-lab/docs/PRIVACY.md
 4592151497f412e3e31823777e7f1a0ef434911f83326a50b50e8074327ada58  tools/drive-gpu-lab/docs/PROTOCOL.md
@@ -26,7 +26,7 @@ c5bdaf6012786ea592bac45f7684b3e63b55080d8b74ccd54e52197038fbecee  tools/drive-gp
 c735171a69093fbb57a71c9d2915a992b0fd99b5dd9972c4ff286bf842aca157  tools/drive-gpu-lab/src/dgl_ring.c
 4db35667c2d4f727a179aab32a316970270be755fcba6918553c356ffc63c371  tools/drive-gpu-lab/src/hostd_posix.c
 10bac8261760b32a069cac7dbe28cb40c2b30ccea3c54baa5d73066b99b25613  tools/drive-gpu-lab/src/probe_win.rc
-4299407807891f5180906c70b7fbbf756529dfe83707afea981055db1eee96ea  tools/drive-gpu-lab/src/probe_win32.c
+3b54930a42619ea5d0791664a0cc38199f7e6c8d39cd6e6ce6cadd4e637ad69b  tools/drive-gpu-lab/src/probe_win32.c
 2c48c30022a83c35622cfa3634b422571a46cfd57f7b42efd6eceedd12bcead1  tools/drive-gpu-lab/src/sha256.c
 94179a8e4d1190164c6426606b7bd6186831a6f2e0e958cfdd6b92cd0395d4b5  tools/drive-gpu-lab/src/sha256.h
 3dcacb6402b50776ac791748bf91a559fa201565af3d60e9d845b60e747a9e6f  tools/drive-gpu-lab/tests/test_common.c
