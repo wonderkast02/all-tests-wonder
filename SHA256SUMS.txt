@@ -26,7 +26,7 @@ c5bdaf6012786ea592bac45f7684b3e63b55080d8b74ccd54e52197038fbecee  tools/drive-gp
 c735171a69093fbb57a71c9d2915a992b0fd99b5dd9972c4ff286bf842aca157  tools/drive-gpu-lab/src/dgl_ring.c
 4db35667c2d4f727a179aab32a316970270be755fcba6918553c356ffc63c371  tools/drive-gpu-lab/src/hostd_posix.c
 10bac8261760b32a069cac7dbe28cb40c2b30ccea3c54baa5d73066b99b25613  tools/drive-gpu-lab/src/probe_win.rc
-7897e4e0a36d3740405527aaa448d096929e66117231d2f1b74de329e4fd4c10  tools/drive-gpu-lab/src/probe_win32.c
+4299407807891f5180906c70b7fbbf756529dfe83707afea981055db1eee96ea  tools/drive-gpu-lab/src/probe_win32.c
 2c48c30022a83c35622cfa3634b422571a46cfd57f7b42efd6eceedd12bcead1  tools/drive-gpu-lab/src/sha256.c
 94179a8e4d1190164c6426606b7bd6186831a6f2e0e958cfdd6b92cd0395d4b5  tools/drive-gpu-lab/src/sha256.h
 3dcacb6402b50776ac791748bf91a559fa201565af3d60e9d845b60e747a9e6f  tools/drive-gpu-lab/tests/test_common.c

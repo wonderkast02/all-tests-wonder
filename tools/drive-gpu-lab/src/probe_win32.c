@@ -1055,6 +1055,9 @@ static const char *tail_tag_for_name(const char *name) {
 }
 
 
+static int add_tail_path(probe_state *s, const char *path, const char *tag,
+                         bool from_beginning);
+
 static bool ends_with_ci(const char *value, const char *suffix) {
     size_t a, b;
     if (!value || !suffix) return false;
