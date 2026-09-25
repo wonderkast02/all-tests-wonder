@@ -49,6 +49,9 @@
 #define DGL_PROCESS_SCAN_NS 500000000ull
 #define DGL_MODULE_SCAN_NS 10000000000ull
 #define DGL_TAIL_SCAN_NS 1000000000ull
+#define DGL_SHARED_LOG_SCAN_NS 2000000000ull
+#define DGL_SHARED_LOG_MAX_AGE_100NS 432000000000ull
+#define DGL_SHARED_LOG_MAX_DEPTH 7u
 #define DGL_SAMPLE_NS 500000000ull
 
 #ifndef PROCESS_QUERY_LIMITED_INFORMATION
@@ -174,6 +177,7 @@ typedef struct probe_state {
     uint64_t last_process_scan_qpc_ns;
     uint64_t last_module_scan_qpc_ns;
     uint64_t last_tail_scan_qpc_ns;
+    uint64_t last_shared_log_scan_qpc_ns;
     uint64_t last_tail_poll_qpc_ns;
     uint64_t prev_proc_100ns;
     uint64_t prev_cpu_sample_qpc_ns;
@@ -704,7 +708,7 @@ static bool ignored_process_name(const char *name) {
         "explorer.exe", "services.exe", "winedevice.exe", "plugplay.exe", "rpcss.exe",
         "svchost.exe", "winemenubuilder.exe", "wineboot.exe", "start.exe", "cmd.exe",
         "conhost.exe", "rundll32.exe", "regedit.exe", "taskmgr.exe", "msiexec.exe",
-        "wfm.exe", "winefile.exe",
+        "wfm.exe", "winefile.exe", "winhandler.exe", "wine.exe", "wine64.exe",
         "G720Probe.exe", "G720Probe-x64.exe", "G720Probe-x86.exe", NULL
     };
     int i;
@@ -717,22 +721,39 @@ typedef struct window_score_ctx {
     uint64_t area;
 } window_score_ctx;
 
-static BOOL CALLBACK score_window_proc(HWND hwnd, LPARAM param) {
-    window_score_ctx *ctx = (window_score_ctx *)param;
+static void score_window_for_pid(HWND hwnd, window_score_ctx *ctx) {
     DWORD pid = 0;
     RECT r;
     LONG_PTR style;
     uint64_t area;
-    if (!IsWindowVisible(hwnd)) return TRUE;
+    if (!ctx || !IsWindowVisible(hwnd)) return;
     GetWindowThreadProcessId(hwnd, &pid);
-    if (pid != ctx->pid) return TRUE;
+    if (pid != ctx->pid) return;
     style = GetWindowLongPtrA(hwnd, GWL_STYLE);
-    if (!(style & WS_VISIBLE)) return TRUE;
-    if (!GetWindowRect(hwnd, &r)) return TRUE;
-    if (r.right <= r.left || r.bottom <= r.top) return TRUE;
+    if (!(style & WS_VISIBLE)) return;
+    if (!GetWindowRect(hwnd, &r)) return;
+    if (r.right <= r.left || r.bottom <= r.top) return;
     area = (uint64_t)(r.right - r.left) * (uint64_t)(r.bottom - r.top);
     if (area > ctx->area) ctx->area = area;
+}
+
+static BOOL CALLBACK score_child_window_proc(HWND hwnd, LPARAM param) {
+    score_window_for_pid(hwnd, (window_score_ctx *)param);
     return TRUE;
+}
+
+static BOOL CALLBACK score_window_proc(HWND hwnd, LPARAM param) {
+    score_window_for_pid(hwnd, (window_score_ctx *)param);
+    EnumChildWindows(hwnd, score_child_window_proc, param);
+    return TRUE;
+}
+
+static uint64_t visible_window_area_for_pid(DWORD pid) {
+    window_score_ctx wc;
+    memset(&wc, 0, sizeof(wc));
+    wc.pid = pid;
+    EnumWindows(score_window_proc, (LPARAM)&wc);
+    return wc.area;
 }
 
 static DWORD find_process_by_name(const char *name) {
@@ -757,19 +778,23 @@ static DWORD find_process_by_name(const char *name) {
 }
 
 static DWORD find_auto_game(probe_state *s, char *name, size_t name_cap,
-                            char *path, size_t path_cap) {
+                            char *path, size_t path_cap, bool *used_vulkan_evidence) {
     size_t i;
     DWORD best_pid = 0;
     uint64_t best_area = 0;
     uint64_t best_rx = 0;
     uint64_t now = qpc_ns();
+    HANDLE snap;
+    PROCESSENTRY32 pe;
+    if (used_vulkan_evidence) *used_vulkan_evidence = false;
     if (!s) return 0;
 
+    /* Prefer exact pre-attach Vulkan evidence when the game inherits the layer. */
     for (i = 0; i < DGL_PENDING_DEVICE_SLOTS; ++i) {
         pending_device_event *e = &s->pending_device[i];
         char image[DGL_PATH_CAP];
         const char *candidate;
-        window_score_ctx wc;
+        uint64_t area;
 
         if (!e->pid) continue;
         if (now < e->rx_qpc_ns ||
@@ -789,14 +814,12 @@ static DWORD find_auto_game(probe_state *s, char *name, size_t name_cap,
             continue;
         }
 
-        memset(&wc, 0, sizeof(wc));
-        wc.pid = e->pid;
-        EnumWindows(score_window_proc, (LPARAM)&wc);
-        if (!wc.area) continue;
+        area = visible_window_area_for_pid(e->pid);
+        if (!area) continue;
 
-        if (wc.area > best_area ||
-            (wc.area == best_area && e->rx_qpc_ns > best_rx)) {
-            best_area = wc.area;
+        if (area > best_area ||
+            (area == best_area && e->rx_qpc_ns > best_rx)) {
+            best_area = area;
             best_rx = e->rx_qpc_ns;
             best_pid = e->pid;
             snprintf(name, name_cap, "%s", candidate);
@@ -804,6 +827,46 @@ static DWORD find_auto_game(probe_state *s, char *name, size_t name_cap,
         }
     }
 
+    if (best_pid) {
+        if (used_vulkan_evidence) *used_vulkan_evidence = true;
+        return best_pid;
+    }
+
+    /*
+     * A game launched normally from Winlator/Bannerlator does not inherit the
+     * environment of a separately started G720Probe.exe. In that case the
+     * explicit Vulkan layer cannot be an auto-attach prerequisite. Fall back
+     * to the largest visible non-shell process, including child windows used
+     * by Wine virtual desktops.
+     */
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    memset(&pe, 0, sizeof(pe));
+    pe.dwSize = (DWORD)sizeof(pe);
+    best_area = 0;
+    best_pid = 0;
+    if (Process32First(snap, &pe)) {
+        do {
+            char image[DGL_PATH_CAP];
+            const char *candidate;
+            uint64_t area;
+            if (!pe.th32ProcessID) continue;
+            candidate = pe.szExeFile;
+            if (ignored_process_name(candidate)) continue;
+            if (!process_image_path(pe.th32ProcessID, image, sizeof(image))) continue;
+            candidate = base_name(image);
+            if (ignored_process_name(candidate)) continue;
+            area = visible_window_area_for_pid(pe.th32ProcessID);
+            if (!area) continue;
+            if (area > best_area) {
+                best_area = area;
+                best_pid = pe.th32ProcessID;
+                snprintf(name, name_cap, "%s", candidate);
+                snprintf(path, path_cap, "%s", image);
+            }
+        } while (Process32Next(snap, &pe));
+    }
+    CloseHandle(snap);
     return best_pid;
 }
 
@@ -1050,6 +1113,139 @@ static const char *tail_tag_for_name(const char *name) {
     return NULL;
 }
 
+
+static int add_tail_path(probe_state *s, const char *path, const char *tag,
+                         bool from_beginning);
+
+static bool ends_with_ci(const char *value, const char *suffix) {
+    size_t a, b;
+    if (!value || !suffix) return false;
+    a = strlen(value);
+    b = strlen(suffix);
+    if (b > a) return false;
+    return _stricmp(value + a - b, suffix) == 0;
+}
+
+static bool shared_log_dir_skipped(const char *name) {
+    if (!name || !name[0]) return true;
+    if (!strcmp(name, ".") || !strcmp(name, "..")) return true;
+    if (!_stricmp(name, "previous") || !_stricmp(name, ".git")) return true;
+    if (dgl_contains_ci(name, "drivegpulab") ||
+        dgl_contains_ci(name, "drive-gpu-lab") ||
+        dgl_contains_ci(name, "log termux")) return true;
+    return false;
+}
+
+static const char *shared_log_tag_for_name(const char *name) {
+    const char *tag;
+    if (!name || !name[0]) return NULL;
+    if (!_stricmp(name, "logs.txt")) return "WINLATOR";
+    if (!_strnicmp(name, "box64-", 6) && ends_with_ci(name, ".txt")) return "BOX64";
+    if (!ends_with_ci(name, ".log") && !ends_with_ci(name, ".txt")) return NULL;
+    tag = tail_tag_for_name(name);
+    return tag;
+}
+
+static bool shared_log_recent(const WIN32_FIND_DATAA *fd) {
+    FILETIME now_ft;
+    ULARGE_INTEGER now, modified;
+    if (!fd) return false;
+    GetSystemTimeAsFileTime(&now_ft);
+    now.LowPart = now_ft.dwLowDateTime;
+    now.HighPart = now_ft.dwHighDateTime;
+    modified.LowPart = fd->ftLastWriteTime.dwLowDateTime;
+    modified.HighPart = fd->ftLastWriteTime.dwHighDateTime;
+    if (!modified.QuadPart || modified.QuadPart > now.QuadPart) return true;
+    return now.QuadPart - modified.QuadPart <= DGL_SHARED_LOG_MAX_AGE_100NS;
+}
+
+static void record_tail_source(probe_state *s, const log_tail *t) {
+    char ledger[DGL_PATH_CAP];
+    char clean[DGL_PATH_CAP];
+    FILE *f;
+    size_t i;
+    bool header;
+    if (!s || !s->session_open || !t) return;
+    path_join(ledger, sizeof(ledger), s->raw_dir, "log-sources.tsv");
+    header = file_size_or_zero(ledger) == 0;
+    snprintf(clean, sizeof(clean), "%s", t->path);
+    for (i = 0; clean[i]; ++i) {
+        if (clean[i] == '\t' || clean[i] == '\r' || clean[i] == '\n') clean[i] = ' ';
+    }
+    f = fopen(ledger, "a");
+    if (!f) return;
+    if (header) fprintf(f, "qpc_ns\ttag\tinitial_offset\tpath\n");
+    fprintf(f, "%llu\t%s\t%lld\t%s\n",
+            (unsigned long long)qpc_ns(), t->tag,
+            (long long)t->position, clean);
+    fclose(f);
+}
+
+static void discover_shared_log_tree(probe_state *s, const char *root, unsigned depth) {
+    char pattern[DGL_PATH_CAP];
+    WIN32_FIND_DATAA fd;
+    HANDLE h;
+    int n;
+    if (!s || !s->session_open || !root || !root[0]) return;
+    if (depth > DGL_SHARED_LOG_MAX_DEPTH || s->tail_count >= DGL_MAX_TAILS) return;
+    n = snprintf(pattern, sizeof(pattern), "%s\\*", root);
+    if (n < 0 || (size_t)n >= sizeof(pattern)) return;
+    h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        char path[DGL_PATH_CAP];
+        const char *tag;
+        n = snprintf(path, sizeof(path), "%s\\%s", root, fd.cFileName);
+        if (n < 0 || (size_t)n >= sizeof(path)) continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+            if (shared_log_dir_skipped(fd.cFileName)) continue;
+            discover_shared_log_tree(s, path, depth + 1u);
+            if (s->tail_count >= DGL_MAX_TAILS) break;
+            continue;
+        }
+        if (!shared_log_recent(&fd)) continue;
+        tag = shared_log_tag_for_name(fd.cFileName);
+        if (!tag) continue;
+        (void)add_tail_path(s, path, tag, false);
+        if (s->tail_count >= DGL_MAX_TAILS) break;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+static void discover_shared_log_roots(probe_state *s) {
+    static const char *const roots[] = {
+        "Z:\\storage\\emulated\\0\\Documents\\Winlator",
+        "Z:\\storage\\emulated\\0\\Documents\\winlator",
+        "Z:\\storage\\emulated\\0\\Documents\\Bannerlator",
+        "Z:\\storage\\emulated\\0\\Documents\\bannerlator",
+        NULL
+    };
+    char extra[DGL_PATH_CAP * 2];
+    DWORD len;
+    int i;
+    if (!s || !s->session_open) return;
+    for (i = 0; roots[i] && s->tail_count < DGL_MAX_TAILS; ++i)
+        discover_shared_log_tree(s, roots[i], 0u);
+
+    len = GetEnvironmentVariableA("DGL_LOG_ROOTS", extra, (DWORD)sizeof(extra));
+    if (len > 0 && len < sizeof(extra)) {
+        char *p = extra;
+        while (*p && s->tail_count < DGL_MAX_TAILS) {
+            char *end;
+            char *semi;
+            while (*p == ' ' || *p == '\t') ++p;
+            semi = strchr(p, ';');
+            if (semi) *semi = '\0';
+            end = p + strlen(p);
+            while (end > p && (end[-1] == ' ' || end[-1] == '\t')) *--end = '\0';
+            if (*p) discover_shared_log_tree(s, p, 0u);
+            if (!semi) break;
+            p = semi + 1;
+        }
+    }
+}
+
 static void safe_filename(const char *input, char *output, size_t cap) {
     size_t i, j = 0;
     if (!cap) return;
@@ -1075,6 +1271,7 @@ static int add_tail_path(probe_state *s, const char *path, const char *tag, bool
     snprintf(t->raw_path, sizeof(t->raw_path), "%s\\external-%02llu-%s-%s",
              s->raw_dir, (unsigned long long)s->tail_count, tag, filename);
     t->position = from_beginning ? 0 : file_size_or_zero(path);
+    record_tail_source(s, t);
     return 0;
 }
 
@@ -1301,6 +1498,7 @@ static void reset_session_runtime(probe_state *s) {
     s->tail_count = 0;
     s->last_module_scan_qpc_ns = 0;
     s->last_tail_scan_qpc_ns = 0;
+    s->last_shared_log_scan_qpc_ns = 0;
     s->last_tail_poll_qpc_ns = 0;
     s->prev_proc_100ns = 0;
     s->prev_cpu_sample_qpc_ns = 0;
@@ -1413,6 +1611,8 @@ static int open_session(probe_state *s) {
         master_log(s, "PROBE", msg);
     }
     discover_external_logs(s);
+    discover_shared_log_roots(s);
+    s->last_shared_log_scan_qpc_ns = qpc_ns();
     send_host_session_hello(s);
     return 0;
 }
@@ -1608,6 +1808,7 @@ static void try_attach_target(probe_state *s) {
     DWORD pid = 0;
     char name[MAX_PATH] = "";
     char path[DGL_PATH_CAP] = "";
+    bool auto_vulkan = false;
     uint64_t now = qpc_ns();
     if (s->process || now - s->last_process_scan_qpc_ns < DGL_PROCESS_SCAN_NS) return;
     s->last_process_scan_qpc_ns = now;
@@ -1620,9 +1821,13 @@ static void try_attach_target(probe_state *s) {
         if (!pid || !process_image_path(pid, path, sizeof(path))) return;
         snprintf(name, sizeof(name), "%s", s->requested_process);
     } else if (s->auto_mode) {
-        pid = find_auto_game(s, name, sizeof(name), path, sizeof(path));
+        pid = find_auto_game(s, name, sizeof(name), path, sizeof(path), &auto_vulkan);
     }
-    if (pid) (void)attach_target(s, pid, name, path);
+    if (pid && attach_target(s, pid, name, path) == 0 && s->auto_mode) {
+        master_log(s, "PROBE", auto_vulkan
+                   ? "auto target selected from pre-attach Vulkan device evidence"
+                   : "auto target selected from native visible-window fallback");
+    }
 }
 
 static void sample_process(probe_state *s, uint64_t now_ns) {
@@ -2710,6 +2915,10 @@ static int dgl_main(int argc, char **argv) {
             if (now - state.last_tail_scan_qpc_ns >= DGL_TAIL_SCAN_NS) {
                 discover_external_logs(&state);
                 state.last_tail_scan_qpc_ns = now;
+            }
+            if (now - state.last_shared_log_scan_qpc_ns >= DGL_SHARED_LOG_SCAN_NS) {
+                discover_shared_log_roots(&state);
+                state.last_shared_log_scan_qpc_ns = now;
             }
             if (now - state.last_tail_poll_qpc_ns >= 100000000ull) {
                 poll_external_tails(&state);
