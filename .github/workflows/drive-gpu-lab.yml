@@ -69,12 +69,20 @@ jobs:
               if token in probe_text:
                   raise SystemExit(f'unsupported Tool Help ANSI suffix remains: {token}')
 
-          # Device-gate regression: auto mode must be Vulkan-evidence driven.
+          # Auto-target regression: Vulkan evidence is preferred, native visible-process discovery is the fallback.
           assert '"wfm.exe"' in probe_text
           assert '"winefile.exe"' in probe_text
+          assert '"winhandler.exe"' in probe_text
+          assert '"wine.exe"' in probe_text
+          assert '"wine64.exe"' in probe_text
           assert 'static DWORD find_auto_game(probe_state *s,' in probe_text
           assert 'pending_device_event *e = &s->pending_device[i];' in probe_text
-          assert 'pid = find_auto_game(s, name, sizeof(name), path, sizeof(path));' in probe_text
+          assert 'CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)' in probe_text
+          assert 'visible_window_area_for_pid' in probe_text
+          assert 'EnumChildWindows' in probe_text
+          assert 'pid = find_auto_game(s, name, sizeof(name), path, sizeof(path), &auto_vulkan);' in probe_text
+          assert 'auto target selected from pre-attach Vulkan device evidence' in probe_text
+          assert 'auto target selected from native visible-window fallback' in probe_text
           loop_anchor = 'pump_messages();'
           drain_anchor = 'drain_udp(&state);'
           attach_anchor = 'if (!state.process) try_attach_target(&state);'
@@ -95,7 +103,7 @@ jobs:
           assert 'Documents\\\\Winlator' in probe_text
           assert 'Documents\\\\Bannerlator' in probe_text
           print('shared Winlator/Bannerlator log auto-discovery: PASS')
-          print('auto-target Vulkan PID evidence: PASS')
+          print('auto-target Vulkan-priority + native-fallback evidence: PASS')
           print('VK memory validity semantics: PASS')
           print('Tool Help API naming: PASS')
           print('source tree + manifest + SPDX: PASS')
