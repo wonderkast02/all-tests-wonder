@@ -1,98 +1,115 @@
-# 🧪 All Tests Wonder
+<div align="center">
 
-Ferramentas de **teste, telemetria, diagnóstico e qualificação** para gráficos e runtimes.
+# 🧪 GPU Lab
 
-Projeto independente para validar ferramentas, builds e ambientes com evidências reproduzíveis.
+### Diagnóstico reproduzível para Winlator, Wine e PanVK
 
----
+**`Jogo → DXVK / VKD3D → Wine / Vulkan → Mesa / PanVK`**
 
-## 🚀 Drive GPU Lab
+![Status](https://img.shields.io/badge/STATUS-PRÉ--VERSÃO_EXPERIMENTAL-F59E0B?style=for-the-badge)
+![Versão](https://img.shields.io/badge/GPU_LAB-R5.7-2563EB?style=for-the-badge)
+![Windows](https://img.shields.io/badge/MONITOR-WINDOWS_X64-2563EB?style=for-the-badge)
+![Android](https://img.shields.io/badge/COLETA-TERMUX-3DDC84?style=for-the-badge)
 
-**Versão atual:** `0.1.0-dev.1`  
-**Status:** 🟢 pré-versão de desenvolvimento qualificada
+**Logs reais · Sessões isoladas · Integridade verificável**
 
-O **Drive GPU Lab** coleta e organiza informações de testes no **Winlator / Wine / Vulkan / PanVK**, ajudando a identificar com precisão onde um problema começou e em qual ambiente ele ocorreu.
-
-### 🧩 Componentes
-
-- 🖥️ **`G720Probe.exe`** — supervisor, HUD, sessões e telemetria no Windows/Wine/Winlator
-- 🎮 **`G720VkLayer.dll`** — camada Vulkan para present, submits, memória e eventos de falha
-- 📱 **`g720-hostd`** — telemetria do host Android/Linux
-
-### 📊 Coleta
-
-- FPS e frametime
-- CPU, RAM, GPU, frequência e temperatura
-- Vulkan, DXVK, VKD3D-Proton, Wine, Box64 e FEX
-- Mesa / PanVK e módulos gráficos carregados
-- hashes SHA-256 dos binários relevantes
-- eventos, marcadores de bug e contexto da sessão
-- logs separados por jogo e por execução
+</div>
 
 ---
 
-## ✅ Qualificação
+> [!WARNING]
+> **R5.7 é uma candidata experimental.** A coleta foi testada no Bannerlator, porém a GUI apresentou `0xC0000005` e recuperação automática. Não é uma release estável nem substitui instrumentação interna do driver.
 
-| Etapa | Estado |
-|---|:---:|
-| 🧹 Qualidade do código-fonte | ✅ |
-| 🐧 Linux x86_64 | ✅ |
-| 📱 Android arm64-v8a | ✅ |
-| 🪟 Windows x64 | ✅ |
-| 🪟 Windows x86 | ✅ |
-| 🔐 SHA-256 dos pacotes | ✅ |
-| 🧩 Arquiteturas ELF / PE | ✅ |
-| 🎮 ABI / exports da camada Vulkan | ✅ |
+## Estado validado
 
----
+| Recurso | Situação |
+| --- | :---: |
+| Detecção automática do jogo e PID | ✅ |
+| Acompanhamento de processos, CPU e RAM | ✅ |
+| Coleta e organização dos logs DXVK/Wine disponíveis | ✅ |
+| Arquivamento por jogo: ZIP, CRC e SHA256 | ✅ |
+| Encerramento após o jogo e RETURN independente | ✅ |
+| Relatório `DRIVER-EVIDENCE.json` | ✅ |
+| Relatório `PANVK-EVIDENCE.json` com leitura completa dos logs selecionados | ✅ |
+| Reconhecimento de mensagens `SYNC-A3` | ✅ |
+| Recuperação da GUI após falha | 🧪 |
+| GUI livre de exceções nativas | ❌ |
+| Trace interno PanVK de submits/fences/CSF | ❌ Não comprovado |
+| Biblioteca PanVK realmente carregada pelo jogo | ❌ Não comprovada |
+| FPS/frametime por camada Vulkan | ❌ Não instrumentado nesta linha |
 
-## 📦 Download
+✅ Validado no escopo indicado · 🧪 Experimental · ❌ Não implementado ou não comprovado.
 
-### **[⬇️ Drive GPU Lab 0.1.0-dev.1](https://github.com/wonderkast02/all-tests-wonder/releases/tag/drive-gpu-lab-0.1.0-dev.1)**
+## Download
 
-Escolha o pacote correspondente ao ambiente que será testado.
+**[⬇️ GPU Lab R5.7 — pré-versão de desenvolvimento](https://github.com/wonderkast02/all-tests-wonder/releases/tag/gpu-lab-r5.7-dev)**
 
----
+Baixe `GPU-Lab-R5_7-PanVK-FullScan-GUISafety.sh` nos assets da release, verifique `SHA256SUMS.txt` e execute com Termux. O SH inclui o executável Windows x64 e o coletor Android; **não é APK**.
 
-## 🗂️ Organização
-
-Cada jogo mantém uma pasta própria. Cada execução cria apenas uma nova sessão.
+## Arquitetura
 
 ```text
-DriveGpuLab/
-└── games/
-    └── nome-do-jogo/
-        ├── game.json
-        ├── history.jsonl
-        ├── latest.txt
-        └── sessions/
-            └── <sessão>/
+Bannerlator / Winlator                Termux / Android
+┌────────────────────────┐            ┌───────────────────────────┐
+│ GPU-Lab.exe            │            │ gpu_lab_collector.py      │
+│ ├─ GUI                 │            │ ├─ diagnóstico Android   │
+│ ├─ supervisor          │  arquivos  │ ├─ evidência DXVK/Wine    │
+│ └─ monitor do jogo     ├───────────►│ ├─ análise Mesa / PanVK   │
+└────────────────────────┘            │ └─ ZIP imutável por sessão│
+                                      └───────────────────────────┘
 ```
 
-Assim, resultados antigos não são misturados com testes novos.
+O GPU Lab **não injeta código no jogo**, não modifica o driver e não precisa interromper o processo monitorado. Coleta arquivos de log disponíveis e telemetria visível ao runtime; fontes bloqueadas pelo Android permanecem `NOT_PROVEN` ou indisponíveis.
+
+## Arquivos gerados
+
+```text
+Download/
+├── GPU-Lab/
+│   └── Logs/
+│       ├── speed.exe-<sessão>/
+│       └── speed.exe-<sessão>.zip
+└── Log Termux/
+    └── GPU-Lab-RETURN-<execução>.zip
+```
+
+O ZIP do jogo guarda logs brutos, telemetria, relatórios `DRIVER-EVIDENCE.json` e `PANVK-EVIDENCE.json`, metadados e verificações de integridade. O RETURN contém apenas os diagnósticos da execução e do instalador; não duplica o ZIP completo do jogo.
+
+## Funções
+
+| Bloco | O que faz |
+| --- | --- |
+| Monitor | Reconhece executáveis de jogo, associa PID, detecta saída, mantém sessão independente da GUI |
+| Interface | Estados `AGUARDANDO` / `GRAVANDO` / `FINALIZADO`, indicadores disponíveis e recuperação após queda |
+| Logs externos | Procura arquivos recentes de DXVK, VKD3D, Wine, Box64, FEX, Vulkan, Mesa e PanVK **quando existirem e forem acessíveis** |
+| Evidências | Preserva fontes brutas; sumariza mensagens Vulkan, erros, sync, VUIDs e origem dos dados sem inventar sucesso de chamadas |
+| PanVK | Varredura por streaming e marcadores `SYNC-A3`; aponta limites e Wine compartilhado |
+| Android | Snapshot de ambiente, tentativa de `logcat`/kernel e GPU sysfs quando permitido; ausência explicitada |
+| Integridade | Pastas por sessão, arquivos ZIP imutáveis, SHA256, CRC, prevenção de colisões e duplicatas |
+| Finalização | Detecta encerramento do jogo e gera o RETURN sem obrigar o fechamento do processo-alvo |
+
+## Variáveis de diagnóstico
+
+**[Lista completa de variáveis](tools/drive-gpu-lab/docs/LOG-VARIABLES.md)** · **[PanVK/Mesa](tools/drive-gpu-lab/docs/PANVK-DIAGNOSTICS.md)**
+
+Perfil leve: `DXVK_LOG_LEVEL=info`. Para investigar erros DXVK: `DXVK_LOG_LEVEL=debug`. Para PanVK: `PANVK_DEBUG=startup,sync` **somente se a build efetivamente suportar as opções**. Defina variáveis no processo/container que executa o componente, não apenas no coletor Termux.
+
+## Validação e limitações
+
+- **Hardware real:** Bannerlator, `speed.exe` (Need For Speed Most Wanted Black Edition), sessões ZIP e RETURN íntegros. Última execução R5.7: **45 menções `SYNC-A3`**, extraídas de Wine **compartilhado**, sem atribuição exclusiva ao PID.
+- **Código:** 70 testes de regressão aprovados; Go Windows x64 compilado e submetido a `go vet`. Isso **não** comprova ausência de falhas sob Wine.
+- **Problema conhecido:** `0xC0000005` na GUI; supervisor recuperou a coleta, mas causa exata ainda não foi isolada.
+- **Fontes não garantidas:** logcat sem permissão, kernel Mali/CSF, FPS real e biblioteca nativa carregada. O programa informa lacunas em vez de fabricá-las.
+- **Privacidade:** logs Wine podem conter caminhos e informações pessoais. Revise antes de publicar.
+
+[**Notas da versão**](tools/drive-gpu-lab/CHANGELOG.md) · [**Código-fonte**](tools/drive-gpu-lab/) · [**Como contribuir**](CONTRIBUTING.md) · [**Segurança**](SECURITY.md) · [**Licença**](LICENSING.md)
 
 ---
 
-## 🎯 Princípios
+<div align="center">
 
-- evidência antes de suposição;
-- dados indisponíveis permanecem desconhecidos;
-- cada resultado pertence a uma sessão e ambiente exatos;
-- builds e artefatos devem ser verificáveis;
-- desempenho só é comparado com condições controladas.
+**GPU Lab · Projeto All Tests Wonder**
 
----
+**Evidência reproduzível antes de suposições.**
 
-## ⚠️ Estado do projeto
-
-`Drive GPU Lab 0.1.0-dev.1` é uma ferramenta de **instrumentação para desenvolvimento**.
-
-Não representa certificação oficial de conformidade Vulkan e não garante compatibilidade universal com jogos.
-
----
-
-## 📄 Licenciamento
-
-O **All Tests Wonder** utiliza licenciamento por componente.
-
-O Drive GPU Lab possui licença própria e identificadores SPDX em `tools/drive-gpu-lab/`.
+</div>

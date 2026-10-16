@@ -1,17 +1,11 @@
-# Contributing
+# Contribuindo
 
-Keep changes scoped, reproducible and reviewable.
+O foco é evidência reproduzível e mudanças que não prejudiquem a coleta comprovada.
 
-Before proposing a change:
+- Preserve a independência GUI/monitor/coletor, a imutabilidade dos ZIPs e a separação do RETURN.
+- Execute `PYTHONPATH=tools/drive-gpu-lab/android python3 -m pytest tools/drive-gpu-lab/tests -q`, `go vet` e build Win64.
+- Não versione ZIPs pessoais, logs, dumps, binários compilados, tokens ou dados de dispositivos da comunidade.
+- Não confunda chamadas citadas pelo Wine com operações internas concluídas pelo PanVK.
+- Sempre informe se uma correção foi testada apenas offline ou também no Wine real.
 
-- keep generated binaries out of Git history;
-- preserve existing SPDX/license notices;
-- run `git diff --check`;
-- build and test the component you changed where practical;
-- document behavioral, format or protocol changes;
-- avoid claiming a performance improvement from a single uncontrolled run;
-- preserve backward compatibility of recorded session evidence unless the
-  schema/protocol version is intentionally changed.
-
-Drive GPU Lab-specific architecture and test guidance lives under
-`tools/drive-gpu-lab/docs/`.
+**Problema conhecido:** exceções GUI `0xC0000005` ainda precisam de backtrace nativo e reprodução causal.

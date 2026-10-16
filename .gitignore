@@ -1,24 +1,12 @@
-# Build trees
+# Build artifacts (publish binaries as release assets only)
 build/
-out/
 dist/
-cmake-build-*/
-CMakeFiles/
-CMakeCache.txt
-compile_commands.json
-
-# IDE/editor
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Generated binaries / archives
+out/
 *.exe
 *.dll
 *.so
-*.a
 *.o
+*.a
 *.obj
 *.pdb
 *.zip
@@ -26,12 +14,26 @@ compile_commands.json
 *.tar
 *.tar.gz
 
-# Runtime/log output
+# Logs and runtime sessions
+GPU-Lab/
+Log Termux/
 DriveGpuLab/
 *.log
 *.jsonl
 *.csv
+*.trace
+*.dmp
 
-# OS
+# Python / tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.coverage
+
+# Editors / OS
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
+*.swp

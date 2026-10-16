@@ -1,8 +1,0 @@
-build/
-dist/
-DriveGpuLab/
-*.obj
-*.pdb
-*.ilk
-*.exp
-*.lib
